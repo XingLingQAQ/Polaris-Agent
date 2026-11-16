@@ -13,9 +13,25 @@
 3. 在目标机器上执行页面生成的安装命令。
 4. 运行 `pa status`，回到控制台确认首次上报。
 
-支持 Linux x86_64、Linux aarch64、Windows x86_64、macOS x86_64 和 macOS aarch64。安装和更新需要能访问 GitHub 下载服务。
+支持 Linux x86_64、Linux aarch64、Windows x86_64、macOS x86_64 和 macOS aarch64。安装需要能访问 `raw.githubusercontent.com` 和 GitHub 下载服务，更新需要能访问 GitHub。
 
 每台机器使用独立 Token。安装命令和配置里有凭据，不要公开。系统安装通常需要管理员权限。
+
+安装脚本位于本仓库的 [install.sh](install.sh) 和 [install.ps1](install.ps1)，会自动下载并校验最新稳定版。也可以手动下载后执行，将站点地址和 Token 替换为控制台中的值：
+
+Linux / macOS：
+
+```sh
+curl -fsSL 'https://raw.githubusercontent.com/XingLingQAQ/polaris-agent/main/install.sh' -o install.sh
+POLARIS_AGENT_TOKEN='TOKEN' sh install.sh --endpoint 'https://status.example.com' --mode system
+```
+
+Windows PowerShell：
+
+```powershell
+Invoke-WebRequest 'https://raw.githubusercontent.com/XingLingQAQ/polaris-agent/main/install.ps1' -OutFile install.ps1
+& .\install.ps1 -Endpoint 'https://status.example.com' -Token 'TOKEN' -Mode system
+```
 
 ### 管理服务
 
@@ -37,7 +53,7 @@ pa logs -f
 
 远程配置和操作默认关闭。启用后仍要求机器在线并具备对应能力；保存配置或让指令入队后，要等机器回执。
 
-安装模式、字段、卸载和连接排查见 [Agent 手册](../docs/agents.md)。
+安装模式、字段、卸载和连接排查见 [Agent 手册](https://github.com/XingLingQAQ/UptimePolaris/blob/main/docs/agents.md)。
 
 ## English
 
@@ -50,9 +66,23 @@ pa logs -f
 3. Run the generated command on the target machine.
 4. Run `pa status` and confirm the first report in the console.
 
-Supported platforms are Linux x86_64 and aarch64, Windows x86_64, and macOS x86_64 and aarch64. Installation and updates require access to GitHub downloads.
+Supported platforms are Linux x86_64 and aarch64, Windows x86_64, and macOS x86_64 and aarch64. Installation requires access to `raw.githubusercontent.com` and GitHub downloads; updates require GitHub access.
 
 Each machine has its own token. Keep installation commands and configuration private. System installation usually requires administrator privileges.
+
+The installers are [install.sh](install.sh) and [install.ps1](install.ps1) in this repository. They download and verify the latest stable release. To install manually, download the script and pass your site endpoint and machine token:
+
+```sh
+curl -fsSL 'https://raw.githubusercontent.com/XingLingQAQ/polaris-agent/main/install.sh' -o install.sh
+POLARIS_AGENT_TOKEN='TOKEN' sh install.sh --endpoint 'https://status.example.com' --mode system
+```
+
+For Windows PowerShell:
+
+```powershell
+Invoke-WebRequest 'https://raw.githubusercontent.com/XingLingQAQ/polaris-agent/main/install.ps1' -OutFile install.ps1
+& .\install.ps1 -Endpoint 'https://status.example.com' -Token 'TOKEN' -Mode system
+```
 
 ### Manage
 
@@ -66,7 +96,7 @@ The installation configuration stores the endpoint and machine token. Precedence
 
 Remote configuration and commands are disabled by default. They require an online machine with the relevant capabilities. After saving settings or queuing a command, wait for the machine’s acknowledgement.
 
-See the [Agent guide](../docs/agents.md#agent-guide) for installation modes, configuration, removal, and troubleshooting.
+See the [Agent guide](https://github.com/XingLingQAQ/UptimePolaris/blob/main/docs/agents.md#agent-guide) for installation modes, configuration, removal, and troubleshooting.
 
 ## License
 

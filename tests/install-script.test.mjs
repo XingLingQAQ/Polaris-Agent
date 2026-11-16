@@ -1,0 +1,82 @@
+import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+const sh = readFileSync(new URL('../install.sh', import.meta.url), 'utf8');
+const ps1 = readFileSync(new URL('../install.ps1', import.meta.url), 'utf8');
+for (const source of [sh, ps1]) {
+  assert.match(source, /polaris-agent/);
+  assert.match(source, /record-installation/);
+  assert.match(source, /command register/);
+  assert.match(source, /command unregister/);
+  assert.match(source, /POLARIS_AGENT_TOKEN/);
+  assert.doesNotMatch(source, /uptime-probe|uptime-polaris-agent|UPTIME_AGENT|UPTIME_ENROLLMENT/);
+  assert.match(source, /sha256 mismatch/);
+  assert.match(source, /latest\/download\/manifest\.json/);
+  assert.doesNotMatch(source, /\/api\/public\/agent\/(?:manifest|capabilities|download\/polaris-agent)/);
+  assert.match(source, /configuration contains unsupported fields/);
+}
+assert.ok(sh.indexOf('fetch "$MANIFEST_URL"') < sh.indexOf('fetch "$URL"'));
+assert.ok(ps1.indexOf('Invoke-RestMethod -Uri $manifestUrl') < ps1.indexOf('Invoke-WebRequest -Uri $url'));
+assert.ok(sh.includes('URL="$RELEASE_BASE/download/$RELEASE_TAG/$RELEASE_FILE"'));
+assert.ok(ps1.includes('$url = "$releaseBase/download/$($manifest.tag)/$releaseFile"'));
+assert.match(sh, /--no-register-command/);
+assert.match(ps1, /NoRegisterCommand/);
+assert.ok(ps1.includes("[string]$Endpoint = ''"));
+assert.doesNotMatch(ps1, /Read-Host "Endpoint/);
+assert.ok(/nohup "\$DEST" run --config "\$CFG" >>"\$LOG_PATH"/.test(sh));
+assert.match(sh, /command_args="run --config/);
+assert.match(sh, /exec \$RUN --log-file/);
+assert.match(sh, /ENTRYPOINT \[.*run/);
+assert.ok(/die "[^"]*(?:manifest|required|verify)/.test(sh));
+assert.ok(/Die "[^"]*(?:manifest|required|verify)/.test(ps1));
+assert.match(ps1, /-Argument "run --config/);
+assert.ok(sh.indexOf('sha256 mismatch') < sh.indexOf('mv -f "$BIN_NEW" "$DEST"'));
+assert.ok(sh.indexOf('configuration contains unsupported fields') < sh.indexOf('mv -f "$BIN_NEW" "$DEST"'));
+
+const temp = mkdtempSync(join(tmpdir(), 'polaris-installer-'));
+const run = (program, args) => {
+  const result = spawnSync(program, args, { encoding: 'utf8', windowsHide: true });
+  assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+  return result;
+};
+try {
+  const shPath = join(temp, 'install.sh');
+  const psPath = join(temp, 'install.ps1');
+  writeFileSync(shPath, sh);
+  writeFileSync(psPath, ps1);
+  run('sh', ['-n', shPath]);
+  const parser = join(temp, 'parse.ps1');
+  writeFileSync(parser, '$t=$null; $e=$null; [System.Management.Automation.Language.Parser]::ParseFile($args[0],[ref]$t,[ref]$e) > $null; if ($e.Count) { $e | Out-String | Write-Error; exit 1 }');
+  run(process.platform === 'win32' ? 'powershell.exe' : 'pwsh', ['-NoProfile', '-NonInteractive', '-File', parser, psPath]);
+  const merge = sh.match(/if ! EFFECTIVE_AUTO_UPDATE=\$\(python3 -[^]*?<<'PY'\n([^]*?)\nPY/)?.[1];
+  assert.ok(merge);
+  const mergePath = join(temp, 'merge.py');
+  const saved = join(temp, 'saved.json');
+  const update = join(temp, 'update.json');
+  const merged = join(temp, 'merged.json');
+  writeFileSync(mergePath, merge);
+  const python = spawnSync('python3', ['--version'], { windowsHide: true }).status === 0 ? 'python3' : 'python';
+  const args = [mergePath, saved, update, merged, '0', '0', '5', '60'];
+  writeFileSync(saved, JSON.stringify({ endpoint: 'https://saved.test', token: 'saved-token', sample_interval: 10, report_interval: 90, include_nics: ['eth0'], insecure: true, auto_update: true }));
+  writeFileSync(update, JSON.stringify({ endpoint: 'https://new.test', token: 'new-token' }));
+  assert.equal(run(python, args).stdout.trim(), '1');
+  const config = JSON.parse(readFileSync(merged, 'utf8'));
+  assert.equal(config.endpoint, 'https://saved.test');
+  assert.equal(config.token, 'saved-token');
+  assert.deepEqual(config.include_nics, ['eth0']);
+  assert.equal(config.insecure, true);
+  writeFileSync(update, JSON.stringify({ endpoint: 'https://new.test', token: 'new-token', auto_update: false }));
+  assert.equal(run(python, args).stdout.trim(), '0');
+  for (const bad of [{ ...config, interval: 30 }, { ...config, custom: true }, { ...config, sample_interval: 181, report_interval: 180 }]) {
+    writeFileSync(saved, JSON.stringify(bad));
+    assert.notEqual(spawnSync(python, args, { windowsHide: true }).status, 0);
+  }
+  writeFileSync(saved, '{broken json');
+  assert.notEqual(spawnSync(python, args, { windowsHide: true }).status, 0);
+} finally {
+  rmSync(temp, { recursive: true, force: true });
+}
+console.log('PASS standalone installer sources, parsing and strict config merge');
