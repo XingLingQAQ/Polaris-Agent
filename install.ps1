@@ -1,4 +1,4 @@
-﻿# Uptime Polaris Agent Windows installer / Uptime Polaris Agent Windows 安装器。
+# Uptime Polaris Agent Windows installer
 # .\install.ps1 -Endpoint https://status.example.com -Token TOKEN
 
 param(
@@ -22,22 +22,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# A credential may arrive in the environment instead of the command line. The
-# process command line is readable by any user (Get-CimInstance Win32_Process,
-# Task Manager's command-line column); the environment block is not. Only fill
-# a parameter that was left empty, so an explicit -Token always wins.
-# 凭据可以通过环境而非命令行传入。任何用户都可读取进程命令行
-# （Get-CimInstance Win32_Process 或任务管理器的命令行列），但不能读取环境块。
-# 只填充未提供的参数，显式指定的 -Token 始终优先。
-#
-# process environment variable, and reusing the name would imply a link that
-# does not exist.
-# 进程环境变量；复用名称会暗示一个实际上不存在的关联。
 if (-not $Token -and $env:POLARIS_AGENT_TOKEN) { $Token = $env:POLARIS_AGENT_TOKEN }
 
 function Say($m)  { Write-Host $m }
 function Warn($m) { Write-Host $m -ForegroundColor Yellow }
-function Die($m)  { Write-Host $m -ForegroundColor Red; exit 1 }
+function Die($m)  { throw $m }
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
@@ -54,11 +43,6 @@ if ($ServiceName -notmatch '^[A-Za-z0-9_.@-]+$') { Die 'invalid task name' }
 $taskName = $ServiceName
 
 if ($Uninstall) {
-  # Reports what was actually there. The first version printed "removed" for
-  # both paths unconditionally, so running it on a machine that never had the
-  # probe claimed to have cleaned something up.
-  # 报告实际存在的路径。最初的版本无条件对两个路径都输出“已删除”，
-  # 导致从未安装过 Agent 的机器也显示已清理。
   $found = @()
   $owned = (Test-Path $marker) -and ((Get-Content $marker -Raw) -eq "$taskName|$dest")
   if ($owned) { $found += $dest,$cfg }
@@ -67,7 +51,7 @@ if ($Uninstall) {
 
   if ($found.Count -eq 0) {
     Say "nothing to remove - the probe is not installed on this machine"
-    exit 0
+    return
   }
 
   if ($owned -and (Test-Path -LiteralPath $metadata) -and (Test-Path -LiteralPath $dest)) {
@@ -83,7 +67,7 @@ if ($Uninstall) {
   }
   Say ""
   Say "done"
-  exit 0
+  return
 }
 
 Say "Uptime Polaris Agent installer"
@@ -108,11 +92,7 @@ $effectiveSample = if ($SampleInterval -gt 0) { $SampleInterval } else { 5 }
 $effectiveReport = if ($ReportInterval -gt 0) { $ReportInterval } else { 60 }
 if ($effectiveSample -lt 1 -or $effectiveReport -lt $effectiveSample -or $effectiveReport -gt 1800) { Die 'require 1 <= sample <= report <= 1800' }
 
-# Detect the architecture. PROCESSOR_ARCHITECTURE reports the *process* arch
-# under WOW64, so a 32-bit shell on 64-bit Windows would lie; the env var
-# below is the reliable one.
-# 检测架构。WOW64 下 PROCESSOR_ARCHITECTURE 报告的是进程架构，
-# 因此 64 位 Windows 上的 32 位 shell 会给出错误结果；使用下方环境变量更可靠。
+# WOW64 reports the shell's architecture; prefer the native architecture.
 $arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
 switch ($arch) {
   'AMD64' { $archKey = 'x86_64' }
@@ -126,12 +106,6 @@ New-Item -ItemType Directory -Path $destDir -Force | Out-Null
 New-Item -ItemType Directory -Path $cfgDir -Force | Out-Null
 if ((Test-Path $dest) -or (Test-Path $cfg)) {
   if (-not (Test-Path $marker) -or (Get-Content $marker -Raw) -ne "$taskName|$dest") {
-    # Names the paths it found and the command that clears them. The bare
-    # "ownership marker" sentence sent the operator looking for a file the
-    # installer never told them about; the leftover binary and config are what
-    # actually block the install.
-    # 列出发现的路径以及清理命令。只说“所有权标记”会让管理员寻找一个从未告知的文件；
-    # 实际阻止安装的是残留的二进制文件和配置。
     $found = @()
     if (Test-Path $dest) { $found += $dest }
     if (Test-Path $cfg)  { $found += $cfg }
@@ -204,11 +178,7 @@ The downloaded file does not match the release manifest; refusing to install it.
 }
 Say "  verified    : sha256 $actualSha"
 
-# The token goes in a config file rather than the task's arguments: a task
-# argument is readable by any user through Get-ScheduledTask / schtasks, and
-# it also shows up in the process command line.
-# 令牌写入配置文件而不是任务参数：任何用户都可通过 Get-ScheduledTask / schtasks
-# 读取任务参数，而且参数还会出现在进程命令行中。
+# Keep credentials out of scheduled-task arguments.
 $cfgValues = @{
   endpoint = $Endpoint
 }
@@ -392,7 +362,7 @@ Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
   Remove-Item -LiteralPath $stage,$cfgStage -Force -ErrorAction SilentlyContinue
   if (-not $rollbackFailed) { Remove-Item -LiteralPath $binaryBackup,$cfgBackup,$metadataBackup,$binaryDiscard,$cfgDiscard -Force -ErrorAction SilentlyContinue }
 }
-if ($Mode -eq 'manual') { exit 0 }
+if ($Mode -eq 'manual') { return }
 
 Start-Sleep -Seconds 3
 $proc = Get-Process $agentName -ErrorAction SilentlyContinue

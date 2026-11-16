@@ -17,20 +17,18 @@
 
 每台机器使用独立 Token。安装命令和配置里有凭据，不要公开。系统安装通常需要管理员权限。
 
-安装脚本位于本仓库的 [install.sh](install.sh) 和 [install.ps1](install.ps1)，会自动下载并校验最新稳定版。也可以手动下载后执行，将站点地址和 Token 替换为控制台中的值：
+安装脚本位于本仓库的 [install.sh](install.sh) 和 [install.ps1](install.ps1)，会自动下载并校验最新稳定版。将站点地址和 Token 替换为控制台中的值：
 
 Linux / macOS：
 
 ```sh
-curl -fsSL 'https://raw.githubusercontent.com/XingLingQAQ/polaris-agent/main/install.sh' -o install.sh
-POLARIS_AGENT_TOKEN='TOKEN' sh install.sh --endpoint 'https://status.example.com' --mode system
+curl -fsSL 'https://raw.githubusercontent.com/XingLingQAQ/polaris-agent/main/install.sh' | sh -s -- --endpoint 'https://status.example.com' --token 'TOKEN' --mode 'system'
 ```
 
 Windows PowerShell：
 
 ```powershell
-Invoke-WebRequest 'https://raw.githubusercontent.com/XingLingQAQ/polaris-agent/main/install.ps1' -OutFile install.ps1
-& .\install.ps1 -Endpoint 'https://status.example.com' -Token 'TOKEN' -Mode system
+& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/XingLingQAQ/polaris-agent/main/install.ps1'))) -Endpoint 'https://status.example.com' -Token 'TOKEN'
 ```
 
 ### 管理服务
@@ -70,18 +68,16 @@ Supported platforms are Linux x86_64 and aarch64, Windows x86_64, and macOS x86_
 
 Each machine has its own token. Keep installation commands and configuration private. System installation usually requires administrator privileges.
 
-The installers are [install.sh](install.sh) and [install.ps1](install.ps1) in this repository. They download and verify the latest stable release. To install manually, download the script and pass your site endpoint and machine token:
+The installers are [install.sh](install.sh) and [install.ps1](install.ps1) in this repository. They download and verify the latest stable release. Replace the endpoint and token with the values from your console:
 
 ```sh
-curl -fsSL 'https://raw.githubusercontent.com/XingLingQAQ/polaris-agent/main/install.sh' -o install.sh
-POLARIS_AGENT_TOKEN='TOKEN' sh install.sh --endpoint 'https://status.example.com' --mode system
+curl -fsSL 'https://raw.githubusercontent.com/XingLingQAQ/polaris-agent/main/install.sh' | sh -s -- --endpoint 'https://status.example.com' --token 'TOKEN' --mode 'system'
 ```
 
 For Windows PowerShell:
 
 ```powershell
-Invoke-WebRequest 'https://raw.githubusercontent.com/XingLingQAQ/polaris-agent/main/install.ps1' -OutFile install.ps1
-& .\install.ps1 -Endpoint 'https://status.example.com' -Token 'TOKEN' -Mode system
+& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/XingLingQAQ/polaris-agent/main/install.ps1'))) -Endpoint 'https://status.example.com' -Token 'TOKEN'
 ```
 
 ### Manage

@@ -1,6 +1,8 @@
 #!/bin/sh
 # Uptime Polaris Agent installer / Uptime Polaris Agent 安装器。
 # sh install.sh --endpoint https://status.example.com --token TOKEN
+# Parse the full piped script before execution. / 完整解析后再执行。
+{
 set -eu
 
 AGENT_NAME="polaris-agent"
@@ -1013,3 +1015,4 @@ else
   say "configuration: $CFG"
 fi
 say "remove: sh install.sh --uninstall"
+}

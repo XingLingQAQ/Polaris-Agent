@@ -6,6 +6,11 @@ import { join } from 'node:path';
 
 const sh = readFileSync(new URL('../install.sh', import.meta.url), 'utf8');
 const ps1 = readFileSync(new URL('../install.ps1', import.meta.url), 'utf8');
+assert.match(sh, /\n\{\nset -eu/);
+assert.ok(sh.trimEnd().endsWith('}'));
+assert.notEqual(ps1.charCodeAt(0), 0xFEFF, 'remote PowerShell scripts must not start with a BOM');
+assert.match(ps1, /^[\x00-\x7F]*$/, 'BOM-less scripts must also parse in Windows PowerShell 5.1');
+assert.doesNotMatch(ps1, /\bexit\s+[01]\b/, 'direct invocation must not close the terminal');
 for (const source of [sh, ps1]) {
   assert.match(source, /polaris-agent/);
   assert.match(source, /record-installation/);
