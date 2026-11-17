@@ -140,7 +140,7 @@ if ($entry.file -cne $releaseFile -or $entry.version -cne $releaseVersion -or $e
 if (($entry.size -isnot [int] -and $entry.size -isnot [long] -and $entry.size -isnot [double]) -or $entry.size -le 0 -or $entry.size -gt 64MB -or [Math]::Floor($entry.size) -ne $entry.size) {
   Die "release manifest has no valid size for $detectedPlatform"
 }
-$expectedSha = $entry.sha256
+$expectedSha = $entry.sha256.ToLowerInvariant()
 $expectedSize = [long]$entry.size
 $url = "$releaseBase/download/$($manifest.tag)/$releaseFile"
 Say "  version     : $releaseVersion"
@@ -168,7 +168,19 @@ if ((Get-Item -LiteralPath $stage).Length -ne $expectedSize) {
   Remove-Item -LiteralPath $stage -Force -ErrorAction SilentlyContinue
   Die 'downloaded binary size does not match the release manifest'
 }
-$actualSha = (Get-FileHash -LiteralPath $stage -Algorithm SHA256).Hash
+# 通过 .NET 计算哈希：受限或精简的宿主里可能没有 Microsoft.PowerShell.Utility 提供的 Get-FileHash。
+# Hash through .NET: restricted or trimmed hosts may not load the Get-FileHash cmdlet from Microsoft.PowerShell.Utility.
+$sha256 = [System.Security.Cryptography.SHA256]::Create()
+try {
+  $stream = [System.IO.File]::OpenRead($stage)
+  try {
+    $actualSha = ([System.BitConverter]::ToString($sha256.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+  } finally {
+    $stream.Dispose()
+  }
+} finally {
+  $sha256.Dispose()
+}
 if ($actualSha -ne $expectedSha) {
   Remove-Item -LiteralPath $stage -Force -ErrorAction SilentlyContinue
   Die "sha256 mismatch for $detectedPlatform
