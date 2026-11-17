@@ -552,7 +552,9 @@ exit $LASTEXITCODE
     requireSuccess(result);
     assert.deepEqual(readFileSync(dest), agent);
     assert.equal(JSON.parse(readFileSync(cfg, 'utf8')).service_tier, 'A');
-    const acl = run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '$acl=Get-Acl -LiteralPath $env:FIXTURE_CFG; if (-not $acl.AreAccessRulesProtected -or @($acl.Access | Where-Object IsInherited).Count -ne 0) { exit 1 }'], { env: { ...process.env, FIXTURE_CFG: cfg } });
+    // Read the ACL through .NET: the runner's module path can leave Get-Acl without its module.
+    // 通过 .NET 读取 ACL：运行器的模块路径可能让 Get-Acl 找不到所属模块。
+    const acl = run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '$acl=(Get-Item -LiteralPath $env:FIXTURE_CFG).GetAccessControl(); if (-not $acl.AreAccessRulesProtected -or @($acl.Access | Where-Object IsInherited).Count -ne 0) { exit 1 }'], { env: { ...process.env, FIXTURE_CFG: cfg } });
     requireSuccess(acl);
     assert.match(readFileSync(env.FIXTURE_AGENT_LOG, 'utf8'), /record-installation .*--manager windows-task .*--mode user/);
     assert.match(serviceLog, /trigger startup=False logon=True/);

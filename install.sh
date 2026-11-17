@@ -464,9 +464,9 @@ say "-> downloading $URL"
 fetch "$URL" "$TMP" || die "download failed for $DETECTED_PLATFORM. Check GitHub access from this machine and the release asset: $URL"
 [ "$(wc -c < "$TMP" | tr -d '[:space:]')" = "$EXPECTED_SIZE" ] || die "downloaded binary size does not match the release manifest"
 
-# 用 dd 读取文件头：BSD 的 head 没有 -c，macOS 上会让所有格式判断都失败。
-# Read the magic with dd: BSD head has no -c, which made every format check fail on macOS.
-magic=$(dd if="$TMP" bs=4 count=1 2>/dev/null | od -An -tx1 2>/dev/null)
+# 直接让 od 读前四个字节：BSD 的 head 没有 -c，dd 的输出还会随平台变化。
+# Let od read the first four bytes: BSD head has no -c and dd's output varies by platform.
+magic=$(od -An -N4 -tx1 "$TMP" 2>/dev/null)
 if [ "$OS" = darwin ] && printf '%s' "$magic" | grep -qiE 'cf fa ed fe|fe ed fa cf|ca fe ba be'; then
   : # Mach-O
 elif printf '%s' "$magic" | grep -qi '7f 45 4c 46'; then
