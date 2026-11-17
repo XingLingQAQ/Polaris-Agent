@@ -367,7 +367,7 @@ if [ "\${FIXTURE_UNINSTALL:-0}" = 1 ]; then set -- "$@" --uninstall; fi
     writeFileSync(join(binDir, 'polaris-agent'), 'partial binary');
     if (scenario === 'recovery-new-install') {
       writeFileSync(join(transaction, 'active'), 'absent:absent\n');
-      writeFileSync(manifest, JSON.stringify({ platforms: [{ key: 'linux-x86_64', sha256: '0'.repeat(64) }] }));
+      writeFileSync(manifest, JSON.stringify(releaseManifest('linux-x86_64', agent, '0'.repeat(64))));
     } else {
       writeFileSync(join(transaction, 'active'), 'present:present\n');
       writeFileSync(join(transaction, 'config'), '{"token":"old"}');

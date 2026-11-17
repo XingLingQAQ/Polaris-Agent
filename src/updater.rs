@@ -664,7 +664,7 @@ mod tests {
         fs::write(&config, br#"{"token":"kept","report_interval":60}"#).unwrap();
         fs::write(&stage, b"new binary").unwrap();
         fs::hard_link(&executable, &previous).unwrap();
-        replace_staged_with(&stage, &executable, fs::rename).unwrap();
+        replace_staged_with(&stage, &executable, |from, to| fs::rename(from, to)).unwrap();
         assert_eq!(fs::read(&executable).unwrap(), b"new binary");
         assert_eq!(fs::read(&previous).unwrap(), b"old binary");
         assert_eq!(
