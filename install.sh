@@ -469,16 +469,17 @@ fetch "$URL" "$TMP" || die "download failed for $DETECTED_PLATFORM. Check GitHub
 # POSIX options only: BSD head has no -c, and od's -N / -A shorthands differ by platform.
 # Copy the first four bytes to a temporary file, then read those with od.
 dd if="$TMP" of="$TMP.magic" bs=4 count=1 2>/dev/null || die "cannot read the downloaded release asset"
-magic=$(od -A n -t x1 "$TMP.magic" 2>/dev/null)
-if [ "$OS" = darwin ] && printf '%s' "$magic" | grep -qiE 'cf fa ed fe|fe ed fa cf|ca fe ba be'; then
-  : # Mach-O
-elif printf '%s' "$magic" | grep -qi '7f 45 4c 46'; then
-  : # ELF
-elif printf '%s' "$magic" | grep -qiE '4d 5a'; then
-  : # PE
-else
-  die "the downloaded release asset is not an executable for $DETECTED_PLATFORM (magic: ${magic:-unreadable})"
-fi
+# od 用不等量的空格分隔字节，先压成单空格再比较。
+# od separates bytes with varying amounts of whitespace, so collapse it before comparing.
+magic=$(od -A n -t x1 "$TMP.magic" 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/^ *//;s/ *$//')
+case "$magic" in
+  'cf fa ed fe'|'fe ed fa cf'|'ca fe ba be') [ "$OS" = darwin ] && head_is=mach-o ;;
+esac
+case "$magic" in
+  '7f 45 4c 46') head_is=elf ;;
+  '4d 5a'*) head_is=pe ;;
+esac
+[ -n "${head_is:-}" ] || die "the downloaded release asset is not an executable for $DETECTED_PLATFORM (magic: ${magic:-unreadable})"
 ACTUAL_SHA=$($SHA_CMD "$TMP" 2>/dev/null | grep -oE '[a-fA-F0-9]{64}' | head -n 1 | tr 'A-F' 'a-f')
 EXPECTED_SHA=$(printf '%s' "$EXPECTED_SHA" | tr 'A-F' 'a-f')
 if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
