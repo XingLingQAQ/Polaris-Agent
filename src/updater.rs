@@ -663,6 +663,11 @@ mod tests {
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o750)).unwrap();
         fs::write(&config, br#"{"token":"kept","report_interval":60}"#).unwrap();
         fs::write(&stage, b"new binary").unwrap();
+        // install_unix copies the installed file's mode onto the stage before the swap;
+        // the swap itself only renames, so the mode asserted below is the one set here.
+        // install_unix 在替换前把运行文件的权限复制到暂存文件；替换本身只是重命名，
+        // 因此下面断言的权限就是这里设置的权限。
+        fs::set_permissions(&stage, fs::Permissions::from_mode(0o750)).unwrap();
         fs::hard_link(&executable, &previous).unwrap();
         replace_staged_with(&stage, &executable, |from, to| fs::rename(from, to)).unwrap();
         assert_eq!(fs::read(&executable).unwrap(), b"new binary");
@@ -684,15 +689,15 @@ mod tests {
         let dir = fixture_dir("rollback");
         let executable = dir.join("polaris-agent");
         let previous = dir.join(".polaris-agent.previous");
-        fs::write(&executable, "#!/bin/sh\necho 'polaris-agent 0.2.0'\n").unwrap();
-        fs::write(&previous, "#!/bin/sh\necho 'polaris-agent 0.1.0'\n").unwrap();
+        fs::write(&executable, "#!/bin/sh\necho 'polaris-agent 0.1.0'\n").unwrap();
+        fs::write(&previous, "#!/bin/sh\necho 'polaris-agent 0.0.9'\n").unwrap();
         for path in [&executable, &previous] {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
         }
         rollback_executable(&executable).unwrap();
-        assert_eq!(executable_version(&executable).unwrap(), "0.1.0");
-        assert_eq!(executable_version(&previous).unwrap(), "0.2.0");
+        assert_eq!(executable_version(&executable).unwrap(), "0.0.9");
+        assert_eq!(executable_version(&previous).unwrap(), "0.1.0");
         let _ = fs::remove_dir_all(&dir);
     }
 
