@@ -464,9 +464,12 @@ say "-> downloading $URL"
 fetch "$URL" "$TMP" || die "download failed for $DETECTED_PLATFORM. Check GitHub access from this machine and the release asset: $URL"
 [ "$(wc -c < "$TMP" | tr -d '[:space:]')" = "$EXPECTED_SIZE" ] || die "downloaded binary size does not match the release manifest"
 
-# 直接让 od 读前四个字节：BSD 的 head 没有 -c，dd 的输出还会随平台变化。
-# Let od read the first four bytes: BSD head has no -c and dd's output varies by platform.
-magic=$(od -An -N4 -tx1 "$TMP" 2>/dev/null)
+# 只用 POSIX 选项：BSD 的 head 没有 -c，od 的 -N 与 -A 简写在各平台也不一致。
+# 先把前四个字节落到临时文件，再用 od 读取。
+# POSIX options only: BSD head has no -c, and od's -N / -A shorthands differ by platform.
+# Copy the first four bytes to a temporary file, then read those with od.
+dd if="$TMP" of="$TMP.magic" bs=4 count=1 2>/dev/null || die "cannot read the downloaded release asset"
+magic=$(od -A n -t x1 "$TMP.magic" 2>/dev/null)
 if [ "$OS" = darwin ] && printf '%s' "$magic" | grep -qiE 'cf fa ed fe|fe ed fa cf|ca fe ba be'; then
   : # Mach-O
 elif printf '%s' "$magic" | grep -qi '7f 45 4c 46'; then
