@@ -99,6 +99,15 @@ async function posixInstallFixture() {
   // FIXTURE_CHECK_RECOVERY / FIXTURE_CHECK_ABSENT verify recovery before download; FIXTURE_FORBID_FETCH blocks downloads.
   // FIXTURE_PAUSE_AFTER_CONFIG pauses after config replacement.
   // 这些 FIXTURE_* 变量分别注入备份、替换、恢复检查、下载和配置替换后的暂停。
+  // `rc-update` and `rc-service` are not valid POSIX shell function names, so dash, macOS sh and
+  // the sh shipped with Git for Windows refuse to parse them; provide them as PATH stubs instead.
+  // rc-update 与 rc-service 不是合法的 POSIX 函数名，dash、macOS 的 sh 及 Git for Windows 自带
+  // 的 sh 都会解析失败，因此改用 PATH 里的桩程序。
+  const stubDir = join(root, 'stubs');
+  mkdirSync(stubDir);
+  for (const stub of ['rc-update', 'rc-service']) {
+    writeFileSync(join(stubDir, stub), `#!/bin/sh\nprintf 'unexpected ${stub}\\n' >> "$FIXTURE_SERVICE_LOG"\nexit 1\n`, { mode: 0o755 });
+  }
   writeFileSync(wrapper, `
 ${process.platform === 'win32' ? 'python3() { command python "$@"; }' : ''}
 curl() {
@@ -143,8 +152,6 @@ mv() {
   esac
 }
 systemctl() { printf 'systemctl %s\\n' "$*" >> "$FIXTURE_SERVICE_LOG"; return 1; }
-rc-update() { printf 'unexpected rc-update\\n' >> "$FIXTURE_SERVICE_LOG"; return 1; }
-rc-service() { printf 'unexpected rc-service\\n' >> "$FIXTURE_SERVICE_LOG"; return 1; }
 supervisorctl() { printf 'unexpected supervisorctl\\n' >> "$FIXTURE_SERVICE_LOG"; return 1; }
 crontab() { printf 'unexpected crontab\\n' >> "$FIXTURE_SERVICE_LOG"; return 1; }
 launchctl() { printf 'unexpected launchctl\\n' >> "$FIXTURE_SERVICE_LOG"; return 1; }
@@ -152,9 +159,10 @@ nohup() { printf 'unexpected nohup\\n' >> "$FIXTURE_SERVICE_LOG"; return 1; }
 docker() { printf 'docker %s\\n' "$*" >> "$FIXTURE_SERVICE_LOG"; }
 pgrep() { return 1; }
 sleep() { :; }
-for name in curl systemctl rc-update rc-service supervisorctl crontab launchctl nohup docker; do
+for name in curl systemctl supervisorctl crontab launchctl nohup docker; do
   [ "$(command -v "$name")" = "$name" ] || exit 90
 done
+PATH="${shellRoot}/stubs:$PATH"
 set -- --endpoint https://host.test --token fixture-token --platform linux-x86_64 --mode docker --service-name fixture-agent --no-register-command
 if [ -n "\${FIXTURE_INSTALL:-}" ]; then set -- "$@" --install-dir "$FIXTURE_INSTALL"; fi
 if [ "\${FIXTURE_UNINSTALL:-0}" = 1 ]; then set -- "$@" --uninstall; fi
