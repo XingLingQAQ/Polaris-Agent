@@ -28,8 +28,8 @@ try {
             throw 'Update paths cannot be reparse points'
         }
     }
-    # 通过 .NET 计算哈希：受限或精简的宿主里可能没有 Microsoft.PowerShell.Utility 提供的 Get-FileHash。
-    # Hash through .NET: restricted or trimmed hosts may not load the Get-FileHash cmdlet from Microsoft.PowerShell.Utility.
+    # Hash through .NET: restricted or trimmed hosts may not load the
+    # Get-FileHash cmdlet from Microsoft.PowerShell.Utility.
     $sha256 = [System.Security.Cryptography.SHA256]::Create()
     try {
         $stream = [System.IO.File]::OpenRead($candidate)

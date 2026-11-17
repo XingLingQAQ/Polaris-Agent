@@ -168,8 +168,10 @@ if ((Get-Item -LiteralPath $stage).Length -ne $expectedSize) {
   Remove-Item -LiteralPath $stage -Force -ErrorAction SilentlyContinue
   Die 'downloaded binary size does not match the release manifest'
 }
-# 通过 .NET 计算哈希：受限或精简的宿主里可能没有 Microsoft.PowerShell.Utility 提供的 Get-FileHash。
-# Hash through .NET: restricted or trimmed hosts may not load the Get-FileHash cmdlet from Microsoft.PowerShell.Utility.
+# Hash through .NET: restricted or trimmed hosts may not load the
+# Get-FileHash cmdlet from Microsoft.PowerShell.Utility.
+# This file must stay ASCII: Windows PowerShell 5.1 reads a BOM-less script
+# with the ANSI code page.
 $sha256 = [System.Security.Cryptography.SHA256]::Create()
 try {
   $stream = [System.IO.File]::OpenRead($stage)
