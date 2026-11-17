@@ -117,7 +117,7 @@ if ((Test-Path $dest) -or (Test-Path $cfg)) {
   }
 }
 
-$releaseRepository = 'XingLingQAQ/polaris-agent'
+$releaseRepository = 'XingLingQAQ/Polaris-Agent'
 $releaseBase = "https://github.com/$releaseRepository/releases"
 $manifestUrl = "$releaseBase/latest/download/manifest.json"
 Say "-> checking the latest stable release"

@@ -384,7 +384,7 @@ if [ "$OS" = "windows" ]; then
   die "this is a POSIX shell on Windows ($(uname -s)).
 Use the PowerShell installer instead, from an elevated PowerShell:
 
-  Download https://raw.githubusercontent.com/XingLingQAQ/polaris-agent/main/install.ps1
+  Download https://raw.githubusercontent.com/XingLingQAQ/Polaris-Agent/main/install.ps1
   Run it with -Endpoint URL -Token TOKEN."
 fi
 
@@ -432,7 +432,7 @@ elif command -v openssl >/dev/null 2>&1; then SHA_CMD="openssl dgst -sha256"
 fi
 [ -n "$SHA_CMD" ] || die "download verification requires sha256sum, shasum, or openssl"
 
-RELEASE_REPOSITORY="XingLingQAQ/polaris-agent"
+RELEASE_REPOSITORY="XingLingQAQ/Polaris-Agent"
 RELEASE_BASE="https://github.com/$RELEASE_REPOSITORY/releases"
 MANIFEST_URL="$RELEASE_BASE/latest/download/manifest.json"
 MANIFEST_TMP="$TMP_DIR/manifest"
