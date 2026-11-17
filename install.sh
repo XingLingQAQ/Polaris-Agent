@@ -477,7 +477,7 @@ elif printf '%s' "$magic" | grep -qi '7f 45 4c 46'; then
 elif printf '%s' "$magic" | grep -qiE '4d 5a'; then
   : # PE
 else
-  die "the downloaded release asset is not an executable for $DETECTED_PLATFORM"
+  die "the downloaded release asset is not an executable for $DETECTED_PLATFORM (magic: ${magic:-unreadable})"
 fi
 ACTUAL_SHA=$($SHA_CMD "$TMP" 2>/dev/null | grep -oE '[a-fA-F0-9]{64}' | head -n 1 | tr 'A-F' 'a-f')
 EXPECTED_SHA=$(printf '%s' "$EXPECTED_SHA" | tr 'A-F' 'a-f')
