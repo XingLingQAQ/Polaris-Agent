@@ -607,8 +607,8 @@ fn record_aggregate(
         sysstat::AggregateSample {
             cpu: Some(snapshot.cpu_usage),
             mem_pct,
-            load1: Some(snapshot.load1),
-            load5: Some(snapshot.load5),
+            load1: snapshot.load1,
+            load5: snapshot.load5,
             net_up_total: Some(snapshot.net_total_up),
             net_down_total: Some(snapshot.net_total_down),
         },

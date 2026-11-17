@@ -27,9 +27,9 @@ pub struct SysSnapshot {
     /// 已用交换空间，单位为字节。
     pub swap_used: u64,
 
-    pub load1: f64,
-    pub load5: f64,
-    pub load15: f64,
+    pub load1: Option<f64>,
+    pub load5: Option<f64>,
+    pub load15: Option<f64>,
 
     /// Total size of primary disk, bytes.
     /// 主磁盘总容量，单位为字节。
@@ -53,17 +53,17 @@ pub struct SysSnapshot {
 
     /// Open TCP connections.
     /// 已打开的 TCP 连接数。
-    pub tcp_conns: u64,
+    pub tcp_conns: Option<u64>,
     /// Open UDP sockets.
     /// 已打开的 UDP 套接字数。
-    pub udp_conns: u64,
+    pub udp_conns: Option<u64>,
 
     /// System uptime, seconds.
     /// 系统运行时间，单位为秒。
     pub uptime_secs: u64,
     /// Number of running processes.
     /// 正在运行的进程数。
-    pub process_count: u64,
+    pub process_count: Option<u64>,
 
     /// Optional free-text message for the dashboard (currently unused).
     /// 控制台可选的自由文本消息（目前未使用）。
@@ -124,19 +124,19 @@ impl Default for SysSnapshot {
             mem_used: 0,
             swap_total: 0,
             swap_used: 0,
-            load1: 0.0,
-            load5: 0.0,
-            load15: 0.0,
+            load1: None,
+            load5: None,
+            load15: None,
             disk_total: 0,
             disk_used: 0,
             net_up_bps: 0,
             net_down_bps: 0,
             net_total_up: 0,
             net_total_down: 0,
-            tcp_conns: 0,
-            udp_conns: 0,
+            tcp_conns: None,
+            udp_conns: None,
             uptime_secs: 0,
-            process_count: 0,
+            process_count: None,
             message: String::new(),
             interfaces: Vec::new(),
             mounts: Vec::new(),

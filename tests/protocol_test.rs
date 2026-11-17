@@ -89,19 +89,19 @@ fn report_envelope_and_nesting() {
         mem_used: 3_221_225_472,
         swap_total: 0,
         swap_used: 0,
-        load1: 0.50,
-        load5: 0.30,
-        load15: 0.20,
+        load1: Some(0.50),
+        load5: Some(0.30),
+        load15: Some(0.20),
         disk_total: 107_374_182_400,
         disk_used: 42_949_672_960,
         net_up_bps: 10240,
         net_down_bps: 51200,
         net_total_up: 1_099_511_627_776,
         net_total_down: 2_199_023_255_552,
-        tcp_conns: 12,
-        udp_conns: 1,
+        tcp_conns: Some(12),
+        udp_conns: Some(1),
         uptime_secs: 864_000,
-        process_count: 156,
+        process_count: Some(156),
         message: String::new(),
         interfaces: vec![],
         mounts: vec![],
@@ -150,6 +150,15 @@ fn report_envelope_and_nesting() {
     assert_eq!(p["summaries"][0]["sample_count"], json!(2));
     assert_eq!(p["summaries"][0]["cpu_avg"], json!(20.0));
     assert_eq!(p["summaries"][0]["cpu_max"], json!(30.0));
+}
+
+#[test]
+fn report_keeps_unavailable_runtime_metrics_null() {
+    let report = value_of(&build_report(&SysSnapshot::default(), 180, &[]));
+    for name in ["load1", "load5", "load15"] { assert!(report["params"]["load"][name].is_null()); }
+    assert!(report["params"]["connections"]["tcp"].is_null());
+    assert!(report["params"]["connections"]["udp"].is_null());
+    assert!(report["params"]["process"].is_null());
 }
 
 #[test]

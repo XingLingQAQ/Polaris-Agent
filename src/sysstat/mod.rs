@@ -7,6 +7,8 @@
 mod aggregate;
 mod snapshot;
 mod network_route;
+mod connections;
+mod load;
 
 pub use aggregate::{AggregateSample, FinalizedAggregate, MinuteAggregator};
 pub use snapshot::*;
@@ -23,6 +25,7 @@ use sysinfo::{Disks, Networks, System};
 /// 有状态采样器：保留先前的网络计数器，按采样间隔计算字节/秒速率。
 pub struct Sampler {
     sys: System,
+    load: load::LoadSampler,
     disks: Disks,
     networks: Networks,
     last_net: Option<NetCounters>,
@@ -73,6 +76,7 @@ impl Sampler {
         let disks = Disks::new_with_refreshed_list();
         Self {
             sys,
+            load: load::LoadSampler::default(),
             disks,
             networks,
             last_net: None,
@@ -114,7 +118,7 @@ impl Sampler {
 
         // ==== Load average ====
         // 平均负载 / Load average
-        let load = System::load_average();
+        let load = self.load.capture(elapsed_secs);
 
         // ==== Disk ====
         // Sum all physical disks; on multi-mount Linux this over-counts the
@@ -226,12 +230,7 @@ impl Sampler {
             .map(|m| (m.total_bytes, m.used_bytes))
             .unwrap_or((0, 0));
 
-        // ==== Connections (tcp/udp) — sysinfo 0.30 不提供,返回 0 占位 ====
-        // 真实实现可以读 /proc/net/{tcp,udp} 或用 `netstat2`,但我们保持
-        // 跨平台一致性:不支持就返回 0,协议字段仍存在。
-        // Connections: sysinfo 0.30 does not supply TCP/UDP counts. Return zero where unsupported
-        // for cross-platform consistency, while retaining the protocol fields.
-        let (tcp_conns, udp_conns) = count_connections();
+        let (tcp_conns, udp_conns) = connections::count_connections();
 
         // ==== Uptime ====
         // 运行时间 / Uptime
@@ -247,9 +246,9 @@ impl Sampler {
             mem_used,
             swap_total,
             swap_used,
-            load1: crate::util::round2(load.one),
-            load5: crate::util::round2(load.five),
-            load15: crate::util::round2(load.fifteen),
+            load1: load[0],
+            load5: load[1],
+            load15: load[2],
             disk_total,
             disk_used,
             net_up_bps: up_bps,
@@ -259,7 +258,7 @@ impl Sampler {
             tcp_conns,
             udp_conns,
             uptime_secs,
-            process_count,
+            process_count: (process_count > 0).then_some(process_count),
             message: String::new(),
             interfaces,
             mounts,
@@ -298,26 +297,4 @@ fn matches_filter(value: &str, pattern: &str) -> bool {
         None if pattern.ends_with('*') => value.starts_with(&pattern[..pattern.len() - 1]),
         None => value == pattern,
     }
-}
-
-
-
-#[cfg(target_os = "linux")]
-fn count_connections() -> (u64, u64) {
-    // 尝试数 /proc/net/tcp(6) + /proc/net/udp(6) 的行数
-    // Try counting entries in /proc/net/tcp(6) and /proc/net/udp(6).
-    fn count_lines(path: &str) -> u64 {
-        std::fs::read_to_string(path)
-            .ok()
-            .map(|s| s.lines().skip(1).count() as u64) // skip header / 跳过表头
-            .unwrap_or(0)
-    }
-    let tcp = count_lines("/proc/net/tcp") + count_lines("/proc/net/tcp6");
-    let udp = count_lines("/proc/net/udp") + count_lines("/proc/net/udp6");
-    (tcp, udp)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn count_connections() -> (u64, u64) {
-    (0, 0)
 }
