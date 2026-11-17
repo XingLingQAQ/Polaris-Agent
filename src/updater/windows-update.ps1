@@ -28,7 +28,20 @@ try {
             throw 'Update paths cannot be reparse points'
         }
     }
-    if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash -ne $ExpectedHash) {
+    # 通过 .NET 计算哈希：受限或精简的宿主里可能没有 Microsoft.PowerShell.Utility 提供的 Get-FileHash。
+    # Hash through .NET: restricted or trimmed hosts may not load the Get-FileHash cmdlet from Microsoft.PowerShell.Utility.
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $stream = [System.IO.File]::OpenRead($candidate)
+        try {
+            $actualHash = ([System.BitConverter]::ToString($sha256.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+        } finally {
+            $stream.Dispose()
+        }
+    } finally {
+        $sha256.Dispose()
+    }
+    if ($actualHash -ne $ExpectedHash.ToLowerInvariant()) {
         throw 'Staged Agent checksum changed'
     }
     $version = & $candidate --version

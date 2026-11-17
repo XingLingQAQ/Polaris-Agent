@@ -398,7 +398,7 @@ fn write_stage(path: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(unix)]
 fn replace_staged_with<F>(stage: &Path, executable: &Path, rename: F) -> std::io::Result<()>
 where
-    F: FnOnce(&Path, &Path) -> std::io::Result<()>,
+    F: for<'a, 'b> FnOnce(&'a Path, &'b Path) -> std::io::Result<()>,
 {
     rename(stage, executable)
 }
