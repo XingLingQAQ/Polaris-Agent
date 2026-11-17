@@ -464,11 +464,14 @@ say "-> downloading $URL"
 fetch "$URL" "$TMP" || die "download failed for $DETECTED_PLATFORM. Check GitHub access from this machine and the release asset: $URL"
 [ "$(wc -c < "$TMP" | tr -d '[:space:]')" = "$EXPECTED_SIZE" ] || die "downloaded binary size does not match the release manifest"
 
-if [ "$OS" = darwin ] && head -c 4 "$TMP" 2>/dev/null | od -An -tx1 2>/dev/null | grep -qiE 'cf fa ed fe|fe ed fa cf|ca fe ba be'; then
+# 用 dd 读取文件头：BSD 的 head 没有 -c，macOS 上会让所有格式判断都失败。
+# Read the magic with dd: BSD head has no -c, which made every format check fail on macOS.
+magic=$(dd if="$TMP" bs=4 count=1 2>/dev/null | od -An -tx1 2>/dev/null)
+if [ "$OS" = darwin ] && printf '%s' "$magic" | grep -qiE 'cf fa ed fe|fe ed fa cf|ca fe ba be'; then
   : # Mach-O
-elif head -c 4 "$TMP" 2>/dev/null | od -An -tx1 2>/dev/null | grep -qi '7f 45 4c 46'; then
+elif printf '%s' "$magic" | grep -qi '7f 45 4c 46'; then
   : # ELF
-elif head -c 2 "$TMP" 2>/dev/null | od -An -tx1 2>/dev/null | grep -qi '4d 5a'; then
+elif printf '%s' "$magic" | grep -qiE '4d 5a'; then
   : # PE
 else
   die "the downloaded release asset is not an executable for $DETECTED_PLATFORM"
