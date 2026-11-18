@@ -59,7 +59,25 @@ try {
   record('windows-task', 'system');
   assert.match(invoke(['service', 'restart', '--config', config, '--dry-run']).stdout, /\/End[\s\S]*\/Run/);
   record('launchd');
-  assert.match(invoke(['service', 'restart', '--config', config, '--dry-run']).stdout, /kickstart -k gui\/501\/polaris-fixture/);
+  assert.match(invoke(['service', 'restart', '--config', config, '--dry-run']).stdout, /bootout gui\/501\/polaris-fixture[\s\S]*bootstrap gui\/501 .*service.conf/);
+  record('launchd', 'system');
+  assert.match(invoke(['service', 'restart', '--config', config, '--dry-run']).stdout, /bootout system\/polaris-fixture[\s\S]*bootstrap system .*service.conf/);
+  if (process.platform !== 'win32') {
+    const stubDir = join(temp, 'service-stubs');
+    mkdirSync(stubDir);
+    const calls = join(temp, 'launchctl-calls');
+    writeFileSync(join(stubDir, 'launchctl'), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$FIXTURE_LAUNCH_LOG"\ncase "$1" in bootout) exit 3 ;; bootstrap) exit 0 ;; *) exit 90 ;; esac\n', { mode: 0o755 });
+    const originalPath = env.PATH;
+    env.PATH = `${stubDir}:${originalPath}`;
+    env.FIXTURE_LAUNCH_LOG = calls;
+    for (const scope of ['user', 'system']) {
+      record('launchd', scope);
+      invoke(['restart', '--config', config]);
+    }
+    env.PATH = originalPath;
+    delete env.FIXTURE_LAUNCH_LOG;
+    assert.match(readFileSync(calls, 'utf8'), /bootout gui\/501\/polaris-fixture\nbootstrap gui\/501 .*service.conf\nbootout system\/polaris-fixture\nbootstrap system .*service.conf/);
+  }
   record('docker');
   assert.match(invoke(['service', 'status', '--config', config, '--dry-run']).stdout, /docker compose -f .*service.conf ps/);
   record('manual');

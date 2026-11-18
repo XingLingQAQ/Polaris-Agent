@@ -68,7 +68,16 @@ fn plan(installation: &Installation, action: &ServiceAction) -> Result<Vec<(Stri
                 }
                 ServiceAction::Stop => single("launchctl", vec!["bootout".into(), target]),
                 ServiceAction::Restart => {
-                    single("launchctl", vec!["kickstart".into(), "-k".into(), target])
+                    let plist = installation
+                        .extra_path
+                        .as_ref()
+                        .context("launchd plist path is missing")?
+                        .to_string_lossy()
+                        .into_owned();
+                    Ok(vec![
+                        ("launchctl".into(), vec!["bootout".into(), target]),
+                        ("launchctl".into(), vec!["bootstrap".into(), domain, plist]),
+                    ])
                 }
                 ServiceAction::Status => single("launchctl", vec!["print".into(), target]),
                 ServiceAction::Logs { .. } => Ok(vec![]),
@@ -202,8 +211,8 @@ pub fn execute(installation: &Installation, args: ServiceArgs) -> Result<()> {
             .args(values)
             .status()
             .with_context(|| format!("cannot start {program}"))?;
-        // Task restart ignores a nonzero /End exit status and still tries /Run.
-        // 计划任务重启忽略 /End 的非零退出码，仍尝试 /Run。
+        // Restart also starts an already stopped service.
+        // 重启也适用于已停止的服务。
         if !status.success() && !(index == 0 && commands.len() == 2) {
             bail!(
                 "{program} failed with {status}; check service permissions and installation state"

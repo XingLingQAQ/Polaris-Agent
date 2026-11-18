@@ -86,9 +86,9 @@ mod tests {
         assert_eq!(super::netstat_counts("Active Internet connections\nProto Recv-Q Send-Q\ntcp4 0 0\ntcp6 0 0\nudp4 0 0\nudp6 0 0\nunix 0 0\n"), (2, 2));
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     #[test]
-    fn windows_counts_real_listeners() {
+    fn native_counts_real_listeners() {
         let _tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let _udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let (tcp, udp) = super::count_connections();

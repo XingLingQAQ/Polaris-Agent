@@ -205,6 +205,21 @@ fn sampler_first_frame_reports_zero_rate() {
 fn sampler_returns_snapshot_with_all_fields() {
     let mut s = Sampler::new(5);
     let snap = s.capture();
+    assert!(snap.cpu_usage.is_finite() && (0.0..=100.0).contains(&snap.cpu_usage));
+    assert!(snap.mem_total > 0 && snap.mem_used <= snap.mem_total);
+    assert!(snap.disk_total > 0 && snap.disk_used <= snap.disk_total);
+    assert!(snap.process_count.is_some_and(|count| count > 0));
+    for load in [snap.load1, snap.load5, snap.load15] {
+        assert!(load.is_some_and(|value| value.is_finite() && value >= 0.0));
+    }
+    assert_eq!(
+        snap.net_total_up,
+        snap.interfaces.iter().map(|nic| nic.total_up_bytes).sum::<u64>()
+    );
+    assert_eq!(
+        snap.net_total_down,
+        snap.interfaces.iter().map(|nic| nic.total_down_bytes).sum::<u64>()
+    );
     // Fields must exist and be serializable — spot-check via JSON round-trip
     // 字段必须存在且可序列化；通过 JSON 往返抽查。
     let v = serde_json::to_value(&snap).unwrap();
