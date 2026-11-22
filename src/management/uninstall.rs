@@ -463,13 +463,18 @@ fn open_helper_log(installation: &Installation) -> Option<std::fs::File> {
 
 #[cfg(not(windows))]
 fn posix_script(installation: &Installation, plan: &Plan, ready: &Path) -> Result<String> {
-    for path in plan
+    // Collect first: mixing `&PathBuf` and `&Path` items in one chain does not
+    // type-check.
+    // 先收集：同一条链里混用 `&PathBuf` 和 `&Path` 无法通过类型检查。
+    let checked: Vec<&Path> = plan
         .files
         .iter()
-        .chain(plan.directories.iter())
-        .chain(std::iter::once(&installation.config))
+        .map(PathBuf::as_path)
+        .chain(plan.directories.iter().map(PathBuf::as_path))
+        .chain(std::iter::once(installation.config.as_path()))
         .chain(std::iter::once(ready))
-    {
+        .collect();
+    for path in checked {
         ensure!(
             !path.to_string_lossy().contains(['\n', '\r', '\'']),
             "uninstall path contains a character the helper cannot handle: {}",
