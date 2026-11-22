@@ -1,98 +1,216 @@
 # polaris-agent
 
-[English](#english) · [简体中文](#简体中文)
+[English](README.md) · [简体中文](README-zh-CN.md)
 
-## 简体中文
+`polaris-agent` is the host agent for [Uptime Polaris](https://github.com/XingLingQAQ/UptimePolaris). It reports CPU, memory, disk, network and load, and runs network probes from the machine it is installed on. `pa` is the short command; both operate the same program, configuration and service.
 
-`polaris-agent` 为 Uptime Polaris 采集主机指标，也能执行网络探测。`pa` 是它的短命令，两者操作同一套程序、配置和服务。
+## Install
 
-### 安装
+1. Enable the machine page under **Settings → Presentation** in Uptime Polaris, then create a machine in the Agent console.
+2. Choose the platform, installation mode and intervals.
+3. Copy the generated command from the production origin.
+4. Run it on the target machine with the permissions the mode requires.
+5. Run `pa status`, then confirm the first report in the console.
 
-1. 在 Uptime Polaris 控制台的 Agent 页面创建机器。
-2. 选择目标平台、安装模式和上报间隔。
-3. 在目标机器上执行页面生成的安装命令。
-4. 运行 `pa status`，回到控制台确认首次上报。
+Each machine has its own token. Installation commands and configuration files contain credentials; do not paste them into public discussions or screenshots.
 
-支持 Linux x86_64、Linux aarch64、Windows x86_64、macOS x86_64 和 macOS aarch64。安装需要能访问 `raw.githubusercontent.com` 和 GitHub 下载服务，更新需要能访问 GitHub。
+The target machine needs access to `raw.githubusercontent.com` and GitHub downloads; updates need access to GitHub. The scripts read the latest stable release manifest on the target machine and download the matching binary.
 
-每台机器使用独立 Token。安装命令和配置里有凭据，不要公开。系统安装通常需要管理员权限。
+| Platform | Architecture | Release file |
+| --- | --- | --- |
+| Linux | x86_64 | `polaris-agent-<version>-linux-x86_64` |
+| Linux | aarch64 | `polaris-agent-<version>-linux-aarch64` |
+| macOS | x86_64 | `polaris-agent-<version>-darwin-x86_64` |
+| macOS | aarch64 | `polaris-agent-<version>-darwin-aarch64` |
+| Windows | x86_64 | `polaris-agent-<version>-windows-x86_64.exe` |
 
-安装脚本位于本仓库的 [install.sh](install.sh) 和 [install.ps1](install.ps1)，会自动下载并校验最新稳定版。将站点地址和 Token 替换为控制台中的值：
-
-Linux / macOS：
+Linux and macOS:
 
 ```sh
 curl -fsSL 'https://raw.githubusercontent.com/XingLingQAQ/Polaris-Agent/main/install.sh' | sh -s -- --endpoint 'https://status.example.com' --token 'TOKEN' --mode 'system'
 ```
 
-Windows PowerShell：
+Windows PowerShell:
 
 ```powershell
 & ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/XingLingQAQ/Polaris-Agent/main/install.ps1'))) -Endpoint 'https://status.example.com' -Token 'TOKEN'
 ```
 
-### 管理服务
+Replace the endpoint and token with the values shown in the console. The installer also accepts `--sample-interval`, `--report-interval`, `--install-dir`, `--service-name`, `--include-nics`, `--exclude-nics`, `--include-mounts` and `--exclude-mounts`; `sh install.sh --help` lists the full set.
+
+Adding a machine in the console only registers it. To monitor online status and resource thresholds, create an **Agent** monitor and select that machine. HTTP and TCP monitors can also use the machine as their check source.
+
+### Installation modes
+
+| Mode | Platforms | Behaviour |
+| --- | --- | --- |
+| `system` | Linux, macOS, Windows | System-wide install; usually requires administrator privileges |
+| `user` | Linux, macOS, Windows | Per-user install; stops at logout on macOS |
+| `manual` | Linux, macOS, Windows | Prepares the binary and configuration; run in the foreground as printed |
+| `docker` | Linux | Generates and starts a Compose deployment; updates replace the container |
+
+Linux uses systemd, OpenRC, supervisord or s6 depending on the host, and may fall back to a startup task or manual mode when no supervisor exists. Linux `user` mode requires `systemd --user`. macOS system mode uses launchd in the system domain; Windows system and user modes use Task Scheduler.
+
+Default program directories are `/usr/local/lib/polaris-agent` for system installs and `~/.local/lib/polaris-agent` for user installs. Windows uses the ProgramData or LocalAppData directory chosen by the installer. When you pass a custom directory or service name, follow the installer output and the `install.json` written next to it.
+
+Docker requires Compose v2. The container only sees the resources the container runtime provides; how much of the host is visible depends on the mounts and permissions you grant.
+
+Reinstalling over a running Agent stops the existing task or service first, waits for the process to exit, replaces the binary and configuration, and then starts it again. On Windows and launchd, a failed start attempts to restore the previous program and service definition.
+
+## Manage the service
 
 ```sh
 pa status
 pa start
 pa stop
 pa restart
+pa logs
 pa logs -f
+pa logs -n 200
 ```
 
-服务操作只在有服务管理器的安装中可用。手动模式按安装输出在前台运行；已有服务时不要再启动第二个实例。
+| Command | Purpose |
+| --- | --- |
+| `status` | Service state for this installation |
+| `start` / `stop` / `restart` | Calls the actual service manager |
+| `logs` | Last 50 lines by default |
+| `logs -f` | Follow new output; `Ctrl+C` to stop |
+| `logs -n N` | Choose a line count from 1 to 10000 |
 
-### 配置与更新
+Service operations may need elevation, for example `sudo pa restart`. Structured subcommands such as `polaris-agent service status` do the same thing. Manual installs and installations without a supervisor may not support start or stop; the command reports what is actually available.
 
-连接地址和机器 Token 保存在安装配置里。优先级从高到低：命令行参数、环境变量、JSON 文件。采样和上报间隔必须满足 `1 <= sample_interval <= report_interval <= 1800`，单位秒。连接站点后按后端自动选择默认上报周期：Worker 为 60 秒，Go 为采样间隔；显式配置优先，探测失败时保持 60 秒。
+`pa restart --dry-run` shows the service operation without running it. `run`, `update` and `rollback` do not support `--dry-run`.
 
-`pa update` 检查并安装更新；`pa rollback` 使用本机保留的上一份二进制。托管安装可以开启自动更新，默认关闭；Docker 通过替换容器更新。
-
-远程配置和操作默认关闭。启用后仍要求机器在线并具备对应能力；保存配置或让指令入队后，要等机器回执。
-
-安装模式、字段、卸载和连接排查见 [Agent 手册](https://github.com/XingLingQAQ/UptimePolaris/blob/main/docs/agents.md)。
-
-## English
-
-`polaris-agent` collects host metrics and can run network probes for Uptime Polaris. `pa` is its short command; both operate the same program, configuration, and service.
-
-### Install
-
-1. Create a machine on the console’s Agent page.
-2. Select the platform, installation mode, and reporting interval.
-3. Run the generated command on the target machine.
-4. Run `pa status` and confirm the first report in the console.
-
-Supported platforms are Linux x86_64 and aarch64, Windows x86_64, and macOS x86_64 and aarch64. Installation requires access to `raw.githubusercontent.com` and GitHub downloads; updates require GitHub access.
-
-Each machine has its own token. Keep installation commands and configuration private. System installation usually requires administrator privileges.
-
-The installers are [install.sh](install.sh) and [install.ps1](install.ps1) in this repository. They download and verify the latest stable release. Replace the endpoint and token with the values from your console:
+Foreground operation, for example during troubleshooting:
 
 ```sh
-curl -fsSL 'https://raw.githubusercontent.com/XingLingQAQ/Polaris-Agent/main/install.sh' | sh -s -- --endpoint 'https://status.example.com' --token 'TOKEN' --mode 'system'
+polaris-agent run --config /path/to/config.json
 ```
 
-For Windows PowerShell:
+Do not start a second instance while a service is running.
+
+The installer registers `pa` and `polaris-agent` for the current scope. If the shell cannot find them, reopen the terminal and check the registration directory printed by the installer.
+
+```sh
+polaris-agent command status --config /path/to/config.json
+polaris-agent command register --scope user --config /path/to/config.json
+polaris-agent command unregister --scope user
+```
+
+Registration refuses to overwrite wrappers owned by another program. The wrapper stores only the program and configuration paths, never the machine token. Keep `install.json` with the configuration: management and uninstall both use it.
+
+## Configuration
+
+Precedence is **CLI flags, then `POLARIS_AGENT_*` environment variables, then the JSON file**. When you run through the global wrapper, it already points at the configuration used for this installation; for a foreground run, pass `--config` explicitly.
+
+```json
+{
+  "endpoint": "https://status.example.com",
+  "token": "replace-with-machine-token",
+  "sample_interval": 5,
+  "report_interval": 60,
+  "include_nics": [],
+  "exclude_nics": ["lo"],
+  "include_mounts": [],
+  "exclude_mounts": [],
+  "auto_update": false,
+  "insecure": false
+}
+```
+
+| Field | Default or purpose | CLI / environment |
+| --- | --- | --- |
+| `endpoint` | Site origin or Agent endpoint, required | `--endpoint` / `POLARIS_AGENT_ENDPOINT` |
+| `token` | Per-machine credential, required | `--token` / `POLARIS_AGENT_TOKEN` |
+| `sample_interval` | 5 seconds | `--sample-interval` / `POLARIS_AGENT_SAMPLE_INTERVAL` |
+| `report_interval` | 60 seconds; adjusted after connecting (see below) | `--report-interval` / `POLARIS_AGENT_REPORT_INTERVAL` |
+| `include_nics` / `exclude_nics` | Interface filters | Flags / `POLARIS_AGENT_INCLUDE_NICS`, `POLARIS_AGENT_EXCLUDE_NICS` |
+| `include_mounts` / `exclude_mounts` | Mount filters | Flags / `POLARIS_AGENT_INCLUDE_MOUNTS`, `POLARIS_AGENT_EXCLUDE_MOUNTS` |
+| `auto_update` | Off by default; needs a supervised installation | `--auto-update=true` / `POLARIS_AGENT_AUTO_UPDATE` |
+| `insecure` | Off by default; skips certificate checks for reporting and control connections, not for probe targets | `--insecure=true` / `POLARIS_AGENT_INSECURE` |
+| `log_file` | Optional log file path | `--log-file` |
+
+Intervals are in seconds and must satisfy `1 <= sample_interval <= report_interval <= 1800`. After connecting, the Agent reads `/api/capabilities`: the Worker backend defaults to one report every 60 seconds, while the Go backend reports once per sample for near real-time updates. An explicit `report_interval` wins; if the capability probe fails, the Agent keeps 60 seconds and keeps running.
+
+Filter values are arrays in JSON and comma-separated on the command line. Unknown fields are rejected, so remove fields from older formats instead of carrying them over.
+
+Installation also manages `service_tier` and `runtime_revision`. Keep these values; do not edit the service tier by hand to get around a capability check.
+
+### Remote configuration and commands
+
+The server setting `security.allowAgentCommands` is off by default. When enabled, remote configuration requires the Agent to have reported a supported configuration first, and commands additionally require an online machine that advertises the capability.
+
+Seven values can be synchronized: `sample_interval_secs`, `report_interval_secs`, `include_nics`, `exclude_nics`, `include_mounts`, `exclude_mounts` and `auto_update`. The API uses `_secs` names while the local JSON uses `sample_interval` and `report_interval`; do not mix them.
+
+Explicit CLI flags and environment variables still win over remote values. If they conflict, the Agent rejects the whole version, keeps its running configuration, and reports the conflicting fields. Change the service arguments or environment, restart, and then re-check the remote configuration.
+
+Actions are `re_report`, `check_update`, `restart` and `upgrade`. `restart` and `upgrade` only run in supervised installations that report `service_tier: A`; manual installs refuse them because a failed restart would leave the machine unable to report. Arbitrary shell execution is not supported.
+
+A saved remote version is not proof it was applied. Wait for the Agent report that confirms it, and check the command record and receipt.
+
+## Update and uninstall
+
+### Update
+
+```sh
+pa update
+pa rollback
+```
+
+`pa update` downloads a stable release and verifies its integrity. Managed installations can opt into automatic updates in the console; checks run after a successful report, at most once a day, and are off by default. After updating, check `pa status`, the logs, and the reported version in the console.
+
+Update downloads use fixed GitHub HTTPS addresses, regardless of whether `endpoint` uses HTTP or HTTPS. `pa rollback` restores the previous binary kept on the machine; it does not revert server data or configuration. Docker installations update by rebuilding and replacing the container.
+
+### Uninstall
+
+The Agent can remove itself. `pa uninstall` unregisters the terminal command, stops and deletes the service, and removes the binary and configuration:
+
+```sh
+pa uninstall
+```
+
+On a system installation run it with elevation, for example `sudo pa uninstall`; on Windows use an elevated PowerShell.
+
+Use `pa uninstall --dry-run` to see the plan first, and `--yes` to skip the prompt. Stopping a supervised service terminates the running process, so after confirmation the remaining work is handed to a detached helper that logs to `uninstall.log` next to the binary. Docker installations belong to the Compose project on the host; the command refuses them and prints the `docker compose down` to run there.
+
+The install scripts still work and require the original scope, service name and install directory:
+
+```sh
+curl -fsSL 'https://raw.githubusercontent.com/XingLingQAQ/Polaris-Agent/main/install.sh' -o install.sh
+sh install.sh --uninstall
+```
 
 ```powershell
-& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/XingLingQAQ/Polaris-Agent/main/install.ps1'))) -Endpoint 'https://status.example.com' -Token 'TOKEN'
+Invoke-WebRequest 'https://raw.githubusercontent.com/XingLingQAQ/Polaris-Agent/main/install.ps1' -OutFile install.ps1
+& ./install.ps1 -Uninstall
 ```
 
-### Manage
+Use the original scope, service name and install directory. The uninstaller checks ownership of the service, program, registered commands and configuration before removing them. Removing the host program does not delete console monitors, and deleting a console entry does not uninstall the program.
 
-Use `pa status`, `pa start`, `pa stop`, `pa restart` and `pa logs -f`. Available operations depend on the installation mode and service manager. Follow the installer’s output for manual mode; do not run a second instance alongside an existing service.
+## Data and connectivity
 
-### Configure and update
+- Load, connection counts and process counts are separate metrics, not percentages. Windows load is a smoothed processor queue length; Linux and macOS use system load averages, so the numbers are not directly comparable.
+- Unreadable metrics display `—`; a measured zero stays `0`.
+- Pending snapshots and minute summaries live in memory: up to 4096 samples, 60 snapshots (of which at most 30 may be ahead of server time) and 128 minute buckets. When a buffer is full the Agent logs a warning and may drop data, and an abnormal exit loses unconfirmed data.
+- Reports older than 24 hours are acknowledged and ignored. Reports more than 5 minutes ahead are deferred until their timestamps fall inside the accepted window. Repeated minute summaries are deduplicated by time bucket.
+- Online timeout is three times the report interval, bounded to 30–3600 seconds. With the default 60-second cadence, a machine is considered offline after about 180 seconds without a report.
+- Allow the Agent API and WebSocket through proxies and firewalls; the machine must resolve and reach the site domain.
+- Public network identity is discovered from the real interface, bypassing the HTTP proxy, and re-resolved when Fake-IP is detected. On Windows, Clash, Mihomo and Tailscale interfaces are excluded. If discovery fails, the value stays unknown rather than being guessed.
+- ICMP needs raw-socket permission. Without it, the Agent reports that the check is unsupported rather than failing silently.
 
-The installation configuration stores the endpoint and machine token. Precedence is CLI flags, then environment variables, then JSON. Intervals are in seconds and satisfy `1 <= sample_interval <= report_interval <= 1800`. After connecting, the default cadence follows the backend: 60 seconds on Worker and the sample interval on Go; explicit configuration wins and a failed probe keeps 60 seconds.
+## Troubleshooting
 
-`pa update` checks for updates; `pa rollback` uses the previous binary retained on the machine. Managed installations can opt into automatic updates, off by default. Docker updates replace the container.
+**The console shows the machine as offline.** Run `pa status` and `pa logs -f` on the machine, confirm it can reach the site domain, and confirm the token belongs to this machine entry. Worker backends report every 60 seconds by default, so a short outage can take about three minutes to clear.
 
-Remote configuration and commands are disabled by default. They require an online machine with the relevant capabilities. After saving settings or queuing a command, wait for the machine’s acknowledgement.
+**Metrics are missing or wrong.** Check the interface and mount filters first, then what the OS actually exposes. A container sees the container view unless host resources are mounted. A value shown as `—` was not collected; it is not zero.
 
-See the [Agent guide](https://github.com/XingLingQAQ/UptimePolaris/blob/main/docs/agents.md#agent-guide) for installation modes, configuration, removal, and troubleshooting.
+**`pa` is not found.** Reopen the terminal. If it still is not found, use the wrapper directory printed during installation, or register the command again with `polaris-agent command register`.
+
+**Adding a machine did not create a monitor.** Registering a machine and monitoring it are separate steps. Create an Agent monitor and select the machine; the machine page and the monitor’s public setting are also independent.
+
+**A probe from the Agent fails, though the target works elsewhere.** The probe runs from this machine’s network and with its permissions. Check routing, firewall rules, and for ICMP the raw-socket permission.
+
+More: [Agent guide](https://github.com/XingLingQAQ/UptimePolaris/blob/main/docs/agents.md) · [Troubleshooting](https://github.com/XingLingQAQ/UptimePolaris/blob/main/docs/troubleshooting.md)
 
 ## License
 

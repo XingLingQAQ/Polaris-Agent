@@ -61,6 +61,14 @@ pub enum AgentCommand {
     /// Restore the previously installed binary.
     /// 恢复先前安装的可执行文件。
     Rollback,
+    /// Remove this installation, its service and its registered commands.
+    /// 卸载本次安装，包括服务、已注册命令和程序文件。
+    Uninstall {
+        /// Skip the confirmation prompt.
+        /// 跳过确认提示。
+        #[arg(long)]
+        yes: bool,
+    },
     #[command(hide = true)]
     RecordInstallation(RecordArgs),
 }
@@ -76,9 +84,10 @@ pub fn dispatch(mut args: CliArgs) -> Result<Option<Config>> {
                     AgentCommand::Service { .. }
                         | AgentCommand::ServiceShortcut(_)
                         | AgentCommand::Command { .. }
+                        | AgentCommand::Uninstall { .. }
                 )
             ),
-        "--dry-run is supported only for service management and command registration"
+        "--dry-run is supported only for service management, command registration and uninstall"
     );
     let path = Config::resolve_config_path(args.config.as_deref());
     match args.command.take() {
@@ -94,6 +103,16 @@ pub fn dispatch(mut args: CliArgs) -> Result<Option<Config>> {
         }
         Some(AgentCommand::Command { action }) => {
             management::manage_command(&path, action)?;
+            Ok(None)
+        }
+        Some(AgentCommand::Uninstall { yes }) => {
+            management::uninstall::execute(
+                &path,
+                management::uninstall::Options {
+                    yes,
+                    dry_run: args.dry_run,
+                },
+            )?;
             Ok(None)
         }
         Some(AgentCommand::RecordInstallation(record)) => {

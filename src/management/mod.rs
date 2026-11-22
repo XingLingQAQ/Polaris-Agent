@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 mod registration;
 mod service;
+pub mod uninstall;
 
 pub const COMMAND_NAME: &str = "polaris-agent";
 pub const SHORT_COMMAND_NAME: &str = "pa";
