@@ -510,8 +510,16 @@ fn posix_script(installation: &Installation, plan: &Plan, ready: &Path) -> Resul
                 // Leave the service cgroup first: KillMode=control-group would
                 // otherwise take this helper down with the Agent.
                 // 先脱离服务的 cgroup，否则 KillMode=control-group 会把辅助脚本一起杀掉。
+                // A user service lives in the user manager, so the detach has
+                // to target that manager too.
+                // 用户级服务属于用户管理器，脱离时也要指定同一个管理器。
+                let runner = if installation.scope == Scope::User {
+                    "systemd-run --user"
+                } else {
+                    "systemd-run"
+                };
                 out.push_str(&format!(
-                    "if command -v systemd-run >/dev/null 2>&1 && [ -z \"${{POLARIS_UNINSTALL_DETACHED:-}}\" ]; then\n  POLARIS_UNINSTALL_DETACHED=1 exec systemd-run --quiet --collect --unit=polaris-uninstall-$$ --scope sh \"$0\"\nfi\nsystemctl{user} disable --now {name} >/dev/null 2>&1 || true\n"
+                    "if command -v systemd-run >/dev/null 2>&1 && [ -z \"${{POLARIS_UNINSTALL_DETACHED:-}}\" ]; then\n  POLARIS_UNINSTALL_DETACHED=1 exec {runner} --quiet --collect --unit=polaris-uninstall-$$ --scope sh \"$0\"\nfi\nsystemctl{user} disable --now {name} >/dev/null 2>&1 || true\n"
                 ));
                 let unit = if installation.scope == Scope::User {
                     user_unit_path(&installation.service_name)?
@@ -826,8 +834,32 @@ mod tests {
         let plan = plan_for(&record).unwrap();
         let script = posix_script(&record, &plan, &root.join(".ready")).unwrap();
         let detach = script.find("systemd-run").unwrap();
-        let stop = script.find("systemctl disable").unwrap();
+        // A user-scoped installation stops the service through the user
+        // manager, so both the detach and the stop carry `--user`.
+        // 用户级安装通过用户管理器停止服务，脱离和停止都要带 `--user`。
+        let stop = script.find("systemctl --user disable").unwrap();
         assert!(detach < stop, "the helper must detach before stopping: {script}");
+        assert!(
+            script.contains("exec systemd-run --user"),
+            "a user service must detach through the user manager: {script}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn systemd_helper_matches_the_system_scope() {
+        let root = temp_root("systemd-system");
+        let mut record = installation(&root, "systemd");
+        record.scope = Scope::System;
+        let plan = plan_for(&record).unwrap();
+        let script = posix_script(&record, &plan, &root.join(".ready")).unwrap();
+        assert!(
+            script.contains("exec systemd-run --quiet"),
+            "a system service must detach through the system manager: {script}"
+        );
+        assert!(script.contains("systemctl disable"), "{script}");
+        assert!(!script.contains("systemctl --user"), "{script}");
         fs::remove_dir_all(root).unwrap();
     }
 
