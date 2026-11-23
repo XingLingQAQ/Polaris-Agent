@@ -270,29 +270,21 @@ fn github_get(client: &ureq::Agent, url: &str) -> Result<ureq::Response> {
 fn fetch_manifest() -> Result<(String, ureq::Agent, Manifest)> {
     let repository = repository()?;
     let client = ureq::AgentBuilder::new().redirects(0).timeout_connect(Duration::from_secs(5)).timeout_read(Duration::from_secs(20)).timeout_write(Duration::from_secs(20)).build();
-    let api = format!("https://api.github.com/repos/{repository}/releases/latest");
-    let response = github_get(&client, &api).with_context(|| format!("cannot query latest Agent release for {repository}; check that a release exists and GitHub is reachable"))?;
-    let metadata: serde_json::Value = serde_json::from_slice(&read_bounded(response.into_reader(), 1024 * 1024)?)?;
-    let tag = metadata["tag_name"].as_str().context("release has no tag")?;
-    let version = tag.strip_prefix('v').context("invalid release tag")?;
+    let manifest_url = format!("https://github.com/{repository}/releases/latest/download/manifest.json");
+    let response = github_get(&client, &manifest_url).with_context(|| format!("cannot query latest Agent release for {repository}; check that a release exists and GitHub is reachable"))?;
+    let raw = read_bounded(response.into_reader(), MAX_MANIFEST_BYTES)?;
+    let manifest: Manifest = serde_json::from_slice(&raw).context("invalid release manifest")?;
+    let tag = manifest.tag.as_str();
+    let version = manifest.version.as_str();
+    let tag_version = tag.strip_prefix('v').context("invalid release tag")?;
     let components: Vec<_> = version.split('.').collect();
     anyhow::ensure!(components.len() == 3 && components.iter().all(|part| !part.is_empty() && (part.len() == 1 || !part.starts_with('0')) && part.bytes().all(|c| c.is_ascii_digit())), "invalid release tag");
     anyhow::ensure!(newer_version(version, "0.0.0") || version == "0.0.0", "invalid release version");
-    anyhow::ensure!(metadata["draft"] == false && metadata["prerelease"] == false, "release is not stable");
-    let assets = metadata["assets"].as_array().context("release has no assets")?;
-    let asset_valid = |name: &str, size: Option<u64>| -> bool {
-        let matches: Vec<_> = assets.iter().filter(|item| item["name"].as_str() == Some(name)).collect();
-        matches.len() == 1 && matches[0]["browser_download_url"].as_str() == Some(release_url(&repository, tag, name).as_str()) && size.map_or(true, |n| matches[0]["size"].as_u64() == Some(n))
-    };
-    anyhow::ensure!(asset_valid("manifest.json", None), "release manifest is missing");
-    let raw = read_bounded(github_get(&client, &release_url(&repository, tag, "manifest.json"))?.into_reader(), MAX_MANIFEST_BYTES)?;
-    let manifest: Manifest = serde_json::from_slice(&raw).context("invalid release manifest")?;
-    anyhow::ensure!(manifest.repository == repository && manifest.tag == tag && manifest.version == version && !manifest.platforms.is_empty(), "release manifest identity mismatch");
+    anyhow::ensure!(tag_version == version && manifest.repository == repository && !manifest.platforms.is_empty(), "release manifest identity mismatch");
     let mut seen = std::collections::HashSet::new();
     for release in &manifest.platforms {
         anyhow::ensure!(["linux-x86_64", "linux-aarch64", "windows-x86_64", "darwin-x86_64", "darwin-aarch64"].contains(&release.key.as_str()) && seen.insert(&release.key), "invalid release platform");
         validate_release(release, version, &release.key)?;
-        anyhow::ensure!(asset_valid(&release.file, Some(release.size)), "release asset missing or size mismatch");
     }
     Ok((repository, client, manifest))
 }
