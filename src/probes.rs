@@ -1272,6 +1272,7 @@ mod tests {
 
             config_path: std::path::PathBuf::from("unused"),
             runtime_overrides: Default::default(),
+            collect_gpus: false, collect_sensors: false,
         };
         let (jobs, results, commands) = job_urls(&cfg).unwrap();
         assert_eq!(jobs.path(), "/api/public/agent/jobs/a%2Fb");

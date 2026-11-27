@@ -18,6 +18,23 @@ fn value_of(req: &RpcRequest) -> Value {
 }
 
 #[test]
+fn hardware_fields_are_omitted_until_collected_and_empty_arrays_clear_them() {
+    let mut snapshot = SysSnapshot::default();
+    let old = value_of(&build_report(&snapshot, 123, &[]));
+    assert!(old["params"].get("gpus").is_none());
+    assert!(old["params"].get("sensors").is_none());
+    let direct = serde_json::to_value(&snapshot).unwrap();
+    assert!(direct.get("gpus").is_none());
+    assert!(direct.get("sensors").is_none());
+    snapshot.gpus = Some(vec![]);
+    snapshot.sensors = Some(vec![]);
+    let cleared = value_of(&build_report(&snapshot, 123, &[]));
+    assert_eq!(cleared["params"]["gpus"], json!([]));
+    assert_eq!(cleared["params"]["sensors"], json!([]));
+    assert_eq!(cleared["params"]["cpu"], old["params"]["cpu"]);
+}
+
+#[test]
 fn rpc_envelope_has_jsonrpc_2_0() {
     let req = build_report(&SysSnapshot::default(), 123, &[]);
     let v = value_of(&req);
@@ -105,6 +122,8 @@ fn report_envelope_and_nesting() {
         message: String::new(),
         interfaces: vec![],
         mounts: vec![],
+        gpus: None,
+        sensors: None,
     };
 
     let summary = FinalizedAggregate {

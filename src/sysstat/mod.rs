@@ -9,6 +9,7 @@ mod snapshot;
 mod network_route;
 mod connections;
 mod load;
+pub mod hardware;
 
 pub use aggregate::{AggregateSample, FinalizedAggregate, MinuteAggregator};
 pub use snapshot::*;
@@ -262,6 +263,8 @@ impl Sampler {
             message: String::new(),
             interfaces,
             mounts,
+            gpus: None,
+            sensors: None,
         }
     }
 }

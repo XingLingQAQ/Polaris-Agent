@@ -70,6 +70,11 @@ pub struct CliArgs {
     /// 成功上报后检查 Agent 新版本。
     #[arg(long, env = "POLARIS_AGENT_AUTO_UPDATE", num_args = 0..=1, default_missing_value = "true", require_equals = true, global = true)]
     pub auto_update: Option<bool>,
+
+    #[arg(long, env = "POLARIS_AGENT_COLLECT_GPUS", num_args = 0..=1, default_missing_value = "true", require_equals = true, global = true, help = "Collect NVIDIA GPU telemetry when available")]
+    pub collect_gpus: Option<bool>,
+    #[arg(long, env = "POLARIS_AGENT_COLLECT_SENSORS", num_args = 0..=1, default_missing_value = "true", require_equals = true, global = true, help = "Collect Linux hwmon temperatures when available")]
+    pub collect_sensors: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -86,6 +91,8 @@ struct FileConfig {
     exclude_mounts: Option<Vec<String>>,
     insecure: Option<bool>,
     auto_update: Option<bool>,
+    collect_gpus: Option<bool>,
+    collect_sensors: Option<bool>,
     log_file: Option<PathBuf>,
     #[serde(rename = "runtime_revision")]
     _runtime_revision: Option<String>,
@@ -121,6 +128,8 @@ pub struct Config {
     pub exclude_mounts: Vec<String>,
     pub auto_update: bool,
     pub log_file: Option<PathBuf>,
+    pub collect_gpus: bool,
+    pub collect_sensors: bool,
     pub service_tier: Option<String>,
     pub config_path: PathBuf,
     pub runtime_overrides: RuntimeOverrides,
@@ -231,6 +240,8 @@ impl Config {
             include_mounts,
             exclude_mounts,
             auto_update,
+            collect_gpus: args.collect_gpus.or(file_cfg.collect_gpus).unwrap_or(true),
+            collect_sensors: args.collect_sensors.or(file_cfg.collect_sensors).unwrap_or(true),
             log_file: args.log_file.or(file_cfg.log_file),
             service_tier: file_cfg.service_tier,
             config_path,
@@ -397,6 +408,30 @@ mod tests {
         assert_eq!(cfg.token.unwrap(), "abc");
         assert!(cfg.sample_interval.is_none());
         assert!(cfg.insecure.is_none());
+        assert!(cfg.collect_gpus.is_none());
+        assert!(cfg.collect_sensors.is_none());
+    }
+
+    #[test]
+    fn hardware_settings_default_on_and_cli_overrides_local_file() {
+        let mut random = [0u8; 16];
+        getrandom::getrandom(&mut random).unwrap();
+        let path = std::env::temp_dir().join(format!("polaris-hardware-config-{}.json", hex::encode(random)));
+        let load = |flags: &[&str]| {
+            let mut argv = vec!["polaris-agent", "run", "--config", path.to_str().unwrap()];
+            argv.extend_from_slice(flags);
+            Config::from_args(CliArgs::try_parse_from(argv).unwrap()).unwrap()
+        };
+        std::fs::write(&path, br#"{"endpoint":"https://example.test","token":"fixture"}"#).unwrap();
+        let cfg = load(&[]);
+        assert!(cfg.collect_gpus && cfg.collect_sensors);
+        std::fs::write(&path, br#"{"endpoint":"https://example.test","token":"fixture","collect_gpus":false,"collect_sensors":true}"#).unwrap();
+        let cfg = load(&[]);
+        assert!(!cfg.collect_gpus && cfg.collect_sensors);
+        let cfg = load(&["--collect-gpus=true", "--collect-sensors=false"]);
+        assert!(cfg.collect_gpus && !cfg.collect_sensors);
+        assert!(Config::validate_document(&serde_json::json!({"collect_gpus":"yes"})).is_err());
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

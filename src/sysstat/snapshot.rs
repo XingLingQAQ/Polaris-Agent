@@ -77,6 +77,11 @@ pub struct SysSnapshot {
     /// Per-mount disk stats. Empty on agents that do not populate it.
     /// 各挂载点的磁盘统计；未填充时为空。
     pub mounts: Vec<MountStats>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpus: Option<Vec<super::hardware::GpuStats>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sensors: Option<Vec<super::hardware::SensorStats>>,
 }
 
 /// One network interface's counters at the sample point.
@@ -140,6 +145,8 @@ impl Default for SysSnapshot {
             message: String::new(),
             interfaces: Vec::new(),
             mounts: Vec::new(),
+            gpus: None,
+            sensors: None,
         }
     }
 }

@@ -220,11 +220,14 @@ $savedValues = @{}
 if (Test-Path $cfg) {
   try {
     $saved = Get-Content -Path $cfg -Raw | ConvertFrom-Json
-    $allowed = @('endpoint','token','sample_interval','report_interval','include_nics','exclude_nics','include_mounts','exclude_mounts','insecure','auto_update','log_file','runtime_revision','service_tier')
+    $allowed = @('endpoint','token','sample_interval','report_interval','include_nics','exclude_nics','include_mounts','exclude_mounts','insecure','auto_update','collect_gpus','collect_sensors','log_file','runtime_revision','service_tier')
     if ($saved -isnot [PSCustomObject]) { throw 'config must be an object' }
     foreach ($property in $saved.PSObject.Properties) {
       if ($allowed -cnotcontains $property.Name) { throw 'configuration contains unsupported fields' }
       $savedValues[$property.Name] = $property.Value
+    }
+    foreach ($key in @('collect_gpus','collect_sensors')) {
+      if ($null -ne $savedValues[$key] -and $savedValues[$key] -isnot [bool]) { throw "$key must be a boolean or null" }
     }
   } catch {
     Remove-Item -LiteralPath $stage -Force -ErrorAction SilentlyContinue

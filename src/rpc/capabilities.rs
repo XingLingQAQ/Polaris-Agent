@@ -167,6 +167,7 @@ mod tests {
             service_tier: None,
             config_path: std::path::PathBuf::from("unused"),
             runtime_overrides: Default::default(),
+            collect_gpus: false, collect_sensors: false,
         }
     }
 

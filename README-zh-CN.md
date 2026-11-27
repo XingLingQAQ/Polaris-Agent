@@ -127,6 +127,8 @@ polaris-agent command unregister --scope user
 | `include_nics` / `exclude_nics` | 网卡过滤列表 | 对应参数 / `POLARIS_AGENT_INCLUDE_NICS`、`POLARIS_AGENT_EXCLUDE_NICS` |
 | `include_mounts` / `exclude_mounts` | 挂载点过滤列表 | 对应参数 / `POLARIS_AGENT_INCLUDE_MOUNTS`、`POLARIS_AGENT_EXCLUDE_MOUNTS` |
 | `auto_update` | 默认关闭；需要具备自动重启能力的托管安装 | `--auto-update=true` / `POLARIS_AGENT_AUTO_UPDATE` |
+| `collect_gpus` | 默认开启，自动检测 NVIDIA GPU | `--collect-gpus=false` / `POLARIS_AGENT_COLLECT_GPUS` |
+| `collect_sensors` | 默认开启，自动检测 Linux 硬件温度 | `--collect-sensors=false` / `POLARIS_AGENT_COLLECT_SENSORS` |
 | `insecure` | 默认关闭；跳过上报和控制连接的证书校验，不影响独立的探测目标客户端 | `--insecure=true` / `POLARIS_AGENT_INSECURE` |
 | `log_file` | 可选日志文件路径 | `--log-file` |
 
@@ -135,6 +137,16 @@ polaris-agent command unregister --scope user
 JSON 中的过滤值用数组，命令行用逗号分隔。未知字段会被拒绝，请删除旧格式的字段，不要继续保留。
 
 安装过程还会管理 `service_tier` 和 `runtime_revision`。这些值要保留，不要靠手改服务等级绕过能力检查。
+
+### GPU 与硬件温度
+
+硬件采集默认自动检测，可以单独关闭。Linux 和 Windows 上的 NVIDIA GPU 需要可用的 `nvidia-smi`，程序应位于驱动标准目录或服务 `PATH` 中的绝对路径目录。Agent 最多上报 16 张卡的名称、利用率、显存用量、温度和功耗，驱动不支持的指标保留为未知。目前不支持 AMD、Intel GPU 的利用率、显存和功耗采集，也不支持 macOS 硬件遥测。
+
+Linux 从 `/sys/class/hwmon` 读取最多 64 个温度传感器，包括内核暴露的 CPU、磁盘和 GPU 温度。服务账户需要这些文件的读取权限。容器需要挂载相应的只读 sysfs 路径；采集 NVIDIA GPU 还需要容器内可用的驱动工具和设备访问权限。
+
+硬件在启动时检测，每 10 秒独立采集一次。没有可用来源时，不附加硬件字段，也不显示空卡片。NVIDIA 查询限时 3 秒，失败后等待 60 秒重试，不影响常规上报。已采集的读数在失败或超过 30 秒未更新时清除。新增硬件或安装驱动后，执行 `pa restart` 重新检测。
+
+需要关闭时，在安装使用的 JSON 配置中加入 `"collect_gpus": false` 或 `"collect_sensors": false`，然后重启。这两项只由本地配置控制，远程配置更新会保留原值。服务端需要支持 GPU 与温度遥测；数据只显示在管理员的 Agent 详情中，公开机器接口不返回这些字段。
 
 ### 远程配置与指令
 

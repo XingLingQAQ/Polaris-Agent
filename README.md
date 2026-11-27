@@ -127,6 +127,8 @@ Precedence is **CLI flags, then `POLARIS_AGENT_*` environment variables, then th
 | `include_nics` / `exclude_nics` | Interface filters | Flags / `POLARIS_AGENT_INCLUDE_NICS`, `POLARIS_AGENT_EXCLUDE_NICS` |
 | `include_mounts` / `exclude_mounts` | Mount filters | Flags / `POLARIS_AGENT_INCLUDE_MOUNTS`, `POLARIS_AGENT_EXCLUDE_MOUNTS` |
 | `auto_update` | Off by default; needs a supervised installation | `--auto-update=true` / `POLARIS_AGENT_AUTO_UPDATE` |
+| `collect_gpus` | On by default; detect NVIDIA GPUs | `--collect-gpus=false` / `POLARIS_AGENT_COLLECT_GPUS` |
+| `collect_sensors` | On by default; detect Linux hardware temperatures | `--collect-sensors=false` / `POLARIS_AGENT_COLLECT_SENSORS` |
 | `insecure` | Off by default; skips certificate checks for reporting and control connections, not for probe targets | `--insecure=true` / `POLARIS_AGENT_INSECURE` |
 | `log_file` | Optional log file path | `--log-file` |
 
@@ -135,6 +137,16 @@ Intervals are in seconds and must satisfy `1 <= sample_interval <= report_interv
 Filter values are arrays in JSON and comma-separated on the command line. Unknown fields are rejected, so remove fields from older formats instead of carrying them over.
 
 Installation also manages `service_tier` and `runtime_revision`. Keep these values; do not edit the service tier by hand to get around a capability check.
+
+### GPU and hardware temperatures
+
+Hardware collection is automatic and optional. NVIDIA GPUs on Linux and Windows require a working `nvidia-smi`, available in a standard driver location or an absolute directory in the service's `PATH`. The Agent reports up to 16 GPUs: name, utilization, used/total memory, temperature and power. Unsupported driver metrics remain unknown. GPU utilization, memory and power collection for AMD/Intel, and hardware telemetry on macOS, are not supported yet.
+
+On Linux, the Agent reads up to 64 temperature sensors from `/sys/class/hwmon`, including CPU, disk and GPU temperatures exposed by the kernel. Its service account needs read access to those files. Containers need the appropriate read-only sysfs mounts; NVIDIA collection also needs the driver utility and device access inside the container.
+
+Hardware is discovered at startup and sampled independently every 10 seconds. Missing sources leave no hardware fields or empty cards. NVIDIA queries have a 3-second timeout; failures retry after 60 seconds without delaying ordinary reports. Previously collected readings are cleared on failure or when older than 30 seconds. After adding hardware or installing a driver, restart with `pa restart` to discover it.
+
+To disable either collector, add `"collect_gpus": false` or `"collect_sensors": false` to the installation's JSON configuration and restart. These are local settings; remote configuration preserves them. A server with GPU/temperature telemetry support displays these readings only in the administrator's Agent details; public machine endpoints omit them.
 
 ### Remote configuration and commands
 

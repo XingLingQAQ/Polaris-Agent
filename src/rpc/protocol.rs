@@ -39,9 +39,9 @@ pub fn build_basic_report(
 }
 
 /// Build metrics with observation time and finalized minute summaries.
-/// WebSocket send assigns a request ID and waits for an ACK; empty detail arrays serialize as null.
+/// WebSocket send assigns a request ID and waits for an ACK; empty interface/mount arrays serialize as null.
 /// 构造包含观测时间、采样指标和已结束分钟摘要的上报帧。
-/// WebSocket 发送时分配请求 ID 并等待确认；空明细数组序列化为 null。
+/// WebSocket 发送时分配请求 ID 并等待确认；空网卡与挂载点数组序列化为 null。
 pub fn build_report(
     s: &SysSnapshot,
     observed_at: i64,
@@ -57,7 +57,7 @@ pub fn build_report(
     } else {
         json!(s.mounts)
     };
-    let params = json!({
+    let mut params = json!({
         "cpu":    { "usage": s.cpu_usage },
         "ram":    { "total": s.mem_total, "used": s.mem_used },
         "swap":   { "total": s.swap_total, "used": s.swap_used },
@@ -78,6 +78,12 @@ pub fn build_report(
         "interfaces": interfaces,
         "mounts": mounts,
     });
+    if let Some(gpus) = &s.gpus {
+        params["gpus"] = json!(gpus);
+    }
+    if let Some(sensors) = &s.sensors {
+        params["sensors"] = json!(sensors);
+    }
     RpcRequest::notification("report", params)
 }
 

@@ -236,10 +236,15 @@ struct SamplingState {
     latest: (sysstat::SysSnapshot, i64),
     samples: tokio::sync::mpsc::Receiver<(sysstat::SysSnapshot, i64)>,
     sampler_task: AbortOnDrop,
+    hardware: sysstat::hardware::HardwareTelemetry,
 }
 
-fn start_sampler(mut sampler: sysstat::Sampler, interval_secs: u64) -> (tokio::sync::mpsc::Receiver<(sysstat::SysSnapshot, i64)>, AbortOnDrop) {
-    start_sample_task(move || (sampler.capture(), observed_at()), Duration::from_secs(interval_secs))
+fn start_sampler(mut sampler: sysstat::Sampler, interval_secs: u64, hardware: sysstat::hardware::HardwareReader) -> (tokio::sync::mpsc::Receiver<(sysstat::SysSnapshot, i64)>, AbortOnDrop) {
+    start_sample_task(move || {
+        let mut snapshot = sampler.capture();
+        hardware.apply(&mut snapshot);
+        (snapshot, observed_at())
+    }, Duration::from_secs(interval_secs))
 }
 
 fn start_sample_task(mut capture: impl FnMut() -> (sysstat::SysSnapshot, i64) + Send + 'static, interval: Duration) -> (tokio::sync::mpsc::Receiver<(sysstat::SysSnapshot, i64)>, AbortOnDrop) {
@@ -259,12 +264,13 @@ fn start_sample_task(mut capture: impl FnMut() -> (sysstat::SysSnapshot, i64) + 
 
 impl SamplingState {
     fn new(cfg: &Config) -> Self {
+        let hardware = sysstat::hardware::HardwareTelemetry::start(cfg.collect_gpus, cfg.collect_sensors);
         let mut sampler = sysstat::Sampler::with_config(cfg.sample_interval_secs, cfg);
         let mut aggregator = sysstat::MinuteAggregator::default();
         let mut finalized = VecDeque::new();
         let latest = record_aggregate(sampler.capture(), observed_at(), &mut aggregator, &mut finalized);
-        let (samples, sampler_task) = start_sampler(sampler, cfg.sample_interval_secs);
-        Self { aggregator, finalized, latest, samples, sampler_task }
+        let (samples, sampler_task) = start_sampler(sampler, cfg.sample_interval_secs, hardware.reader());
+        Self { aggregator, finalized, latest, samples, sampler_task, hardware }
     }
 
     async fn reconfigure(&mut self, cfg: &Config) {
@@ -272,7 +278,7 @@ impl SamplingState {
         let _ = (&mut self.sampler_task.0).await;
         drain_samples(&mut self.samples, &mut self.aggregator, &mut self.finalized, &mut self.latest);
         let sampler = sysstat::Sampler::with_config(cfg.sample_interval_secs, cfg);
-        (self.samples, self.sampler_task) = start_sampler(sampler, cfg.sample_interval_secs);
+        (self.samples, self.sampler_task) = start_sampler(sampler, cfg.sample_interval_secs, self.hardware.reader());
     }
 }
 
@@ -477,7 +483,7 @@ async fn session_ws(
         info!(frames = count, "replayed queued frames");
     }
 
-    let SamplingState { aggregator, finalized, latest, samples, sampler_task } = sampling;
+    let SamplingState { aggregator, finalized, latest, samples, sampler_task, .. } = sampling;
     drain_samples(samples, aggregator, finalized, latest);
     let mut report_ticker = tokio::time::interval(Duration::from_secs(cfg.report_interval_secs));
     report_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -721,7 +727,7 @@ async fn session_http(
         last_basic_report = Some(tokio::time::Instant::now());
     }
 
-    let SamplingState { aggregator, finalized, latest, samples, sampler_task } = sampling;
+    let SamplingState { aggregator, finalized, latest, samples, sampler_task, .. } = sampling;
     drain_samples(samples, aggregator, finalized, latest);
     let mut report_ticker = tokio::time::interval(Duration::from_secs(cfg.report_interval_secs));
     report_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1040,6 +1046,7 @@ mod tests {
             include_mounts: vec![], exclude_mounts: vec![], auto_update: false,
             log_file: None, service_tier: None, config_path: std::path::PathBuf::from("unused"),
             runtime_overrides: Default::default(),
+            collect_gpus: false, collect_sensors: false,
         };
         let mut pending = FrameQueue::default();
         for sequence in 1..=2 { pending.push(rpc::RpcRequest::notification("report", serde_json::json!({"sequence":sequence}))); }
@@ -1100,6 +1107,7 @@ mod tests {
 
             config_path: std::path::PathBuf::from("unused"),
             runtime_overrides: Default::default(),
+            collect_gpus: false, collect_sensors: false,
         };
         let frames: Vec<_> = (1..=3)
             .map(|sequence| {
