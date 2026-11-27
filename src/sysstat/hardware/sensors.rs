@@ -1,5 +1,6 @@
 use super::{bounded_number, hardware_name, SensorKind, SensorStats};
 use std::{
+    collections::HashMap,
     fs,
     io::{self, Read},
     path::{Path, PathBuf},
@@ -69,11 +70,14 @@ fn discover(root: &Path) -> io::Result<Vec<SensorSource>> {
     let mut chips: Vec<_> = fs::read_dir(root)?
         .take(128)
         .filter_map(Result::ok)
-        .filter(|entry| numbered(&entry.file_name().to_string_lossy(), "hwmon", ""))
+        .filter_map(|entry| {
+            numbered_index(&entry.file_name().to_string_lossy(), "hwmon", "")
+                .map(|index| (index, entry))
+        })
         .collect();
-    chips.sort_by_key(|entry| entry.file_name());
+    chips.sort_by_key(|(index, _)| *index);
     let mut sources = Vec::new();
-    for chip in chips {
+    'chips: for (_, chip) in chips {
         let dir = chip.path();
         let id = chip.file_name().to_string_lossy().into_owned();
         let name = read_small(&dir.join("name"))
@@ -87,35 +91,69 @@ fn discover(root: &Path) -> io::Result<Vec<SensorSource>> {
         let mut inputs: Vec<_> = entries
             .take(1024)
             .filter_map(Result::ok)
-            .filter(|entry| numbered(&entry.file_name().to_string_lossy(), "temp", "_input"))
+            .filter_map(|entry| {
+                numbered_index(&entry.file_name().to_string_lossy(), "temp", "_input")
+                    .map(|index| (index, entry))
+            })
             .collect();
-        inputs.sort_by_key(|entry| entry.file_name());
-        for input in inputs {
+        inputs.sort_by_key(|(index, _)| *index);
+        for (_, input) in inputs {
             let filename = input.file_name().to_string_lossy().into_owned();
             let stem = filename.trim_end_matches("_input");
             let label = read_small(&dir.join(format!("{stem}_label")))
                 .ok()
                 .and_then(|s| hardware_name(&s))
                 .unwrap_or_else(|| stem.to_owned());
-            let display = hardware_name(&format!("{id}/{stem} {name}: {label}"))
-                .expect("nonempty sensor identity");
+            let display =
+                hardware_name(&format!("{name}: {label}")).expect("nonempty sensor identity");
             sources.push(SensorSource {
                 input: input.path(),
                 name: display,
                 kind,
             });
             if sources.len() == MAX_SENSORS {
-                return Ok(sources);
+                break 'chips;
             }
         }
     }
+    disambiguate_names(&mut sources);
     Ok(sources)
 }
 
-fn numbered(text: &str, prefix: &str, suffix: &str) -> bool {
-    text.strip_prefix(prefix)
-        .and_then(|s| s.strip_suffix(suffix))
-        .is_some_and(|s| !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit()))
+fn numbered_index(text: &str, prefix: &str, suffix: &str) -> Option<u32> {
+    let number = text.strip_prefix(prefix)?.strip_suffix(suffix)?;
+    if !number.bytes().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    number.parse().ok()
+}
+
+fn disambiguate_names(sources: &mut [SensorSource]) {
+    let mut counts = HashMap::new();
+    for source in sources.iter() {
+        *counts.entry(source.name.clone()).or_insert(0) += 1;
+    }
+    for source in sources {
+        if counts[&source.name] < 2 {
+            continue;
+        }
+        let id = source
+            .input
+            .parent()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy();
+        let filename = source.input.file_name().unwrap().to_string_lossy();
+        let stem = filename.trim_end_matches("_input");
+        let suffix = format!(" ({id}/{stem})");
+        let base: String = source
+            .name
+            .chars()
+            .take(128 - suffix.chars().count())
+            .collect();
+        source.name = format!("{}{suffix}", base.trim_end());
+    }
 }
 
 fn classify(chip: &str) -> SensorKind {
@@ -256,7 +294,8 @@ mod tests {
         let sources = discover(&f.0).unwrap();
         let sensors = collect(&sources);
         assert_eq!(sensors.len(), 4);
-        assert_eq!(sensors[0].name, "hwmon0/temp1 coretemp: Package id 0");
+        assert_eq!(sensors[0].name, "coretemp: Package id 0");
+        assert_eq!(sensors[1].name, "nvme: Composite");
         assert_eq!(sensors[0].temp_c, 64.375);
         assert_eq!(sensors[0].kind, SensorKind::Cpu);
         assert_eq!(sensors[1].kind, SensorKind::Disk);
@@ -310,7 +349,40 @@ mod tests {
         let sensors = collect(&sources);
         assert_eq!(sensors.len(), 64);
         assert!(sensors.iter().all(|s| s.name.chars().count() == 128));
+        assert!(sensors[0].name.ends_with(" (hwmon0/temp0)"));
+        assert!(sensors[63].name.ends_with(" (hwmon0/temp63)"));
+        let unique: std::collections::HashSet<_> = sensors.iter().map(|s| &s.name).collect();
+        assert_eq!(unique.len(), sensors.len());
         fs::write(&sources[0].input, "0".repeat(1025)).unwrap();
         assert_eq!(collect(&sources).len(), 63);
+    }
+
+    #[test]
+    fn duplicate_names_get_suffixes_and_sources_sort_by_numeric_index() {
+        let f = Fixture::new();
+        for (chip, input, label) in [
+            (10, 1, "Composite"),
+            (2, 10, "Composite"),
+            (2, 2, "Composite"),
+            (2, 1, "Controller"),
+        ] {
+            f.write(&format!("hwmon{chip}/name"), "nvme");
+            f.write(&format!("hwmon{chip}/temp{input}_input"), "45000");
+            f.write(&format!("hwmon{chip}/temp{input}_label"), label);
+        }
+        let sources = discover(&f.0).unwrap();
+        let names: Vec<_> = sources.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "nvme: Controller",
+                "nvme: Composite (hwmon2/temp2)",
+                "nvme: Composite (hwmon2/temp10)",
+                "nvme: Composite (hwmon10/temp1)",
+            ]
+        );
+        assert_eq!(numbered_index("hwmon4294967296", "hwmon", ""), None);
+        assert_eq!(numbered_index("temp+2_input", "temp", "_input"), None);
+        assert_eq!(numbered_index("temp_input", "temp", "_input"), None);
     }
 }

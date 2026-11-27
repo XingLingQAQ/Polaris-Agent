@@ -125,8 +125,8 @@ async fn bounded_output(command: &mut Command, deadline: Duration) -> io::Result
 }
 
 fn mib_to_bytes(text: &str) -> Option<u64> {
-    let bytes = bounded_number(text, 0.0, MAX_SAFE_INTEGER as f64)? * 1_048_576.0;
-    (bytes <= MAX_SAFE_INTEGER as f64 && bytes.fract() == 0.0).then_some(bytes as u64)
+    let bytes = (bounded_number(text, 0.0, MAX_SAFE_INTEGER as f64)? * 1_048_576.0).round() as u64;
+    (bytes <= MAX_SAFE_INTEGER).then_some(bytes)
 }
 
 fn parse(bytes: &[u8]) -> io::Result<Vec<GpuStats>> {
@@ -198,6 +198,34 @@ mod tests {
         assert_eq!(gpus[1].mem_used_bytes, None);
         assert_eq!(gpus[1].temp_c, None);
         assert_eq!(gpus[1].power_w, None);
+    }
+
+    #[test]
+    fn fractional_mib_rounds_to_bytes_within_the_safe_integer_limit() {
+        assert_eq!(mib_to_bytes("1.1"), Some(1_153_434));
+        assert_eq!(mib_to_bytes("1.01"), Some(1_059_062));
+        assert_eq!(mib_to_bytes("0.000000476837158203125"), Some(1));
+        assert_eq!(mib_to_bytes("0"), Some(0));
+        assert_eq!(mib_to_bytes("1024"), Some(1_073_741_824));
+        let largest_mib = MAX_SAFE_INTEGER as f64 / 1_048_576.0;
+        assert_eq!(
+            mib_to_bytes(&largest_mib.to_string()),
+            Some(MAX_SAFE_INTEGER)
+        );
+        for value in [
+            "8589934592",
+            "9007199254740991",
+            "1e300",
+            "-0.01",
+            "NaN",
+            "inf",
+            "N/A",
+        ] {
+            assert_eq!(mib_to_bytes(value), None, "{value}");
+        }
+        let gpus = parse(b"0, GPU, 50, 1.1, 1.01, 60, 100").unwrap();
+        assert_eq!(gpus[0].mem_used_bytes, None);
+        assert_eq!(gpus[0].mem_total_bytes, Some(1_059_062));
     }
 
     #[test]
