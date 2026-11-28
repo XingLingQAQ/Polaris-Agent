@@ -89,7 +89,9 @@ systemctl stop "$SERVICE_NAME"
 echo 'PASS real systemd: spaced paths, atomic config/binary writes, sandbox and clean-exit restart'
 
 rm "$CFG_DIR/runs"
-mkdir -p "$live"
+mkdir -p /run/service "$fixture/s6"
+# Some runners mount /run with noexec.
+ln -s "$fixture/s6" "$live"
 template=$(awk '/^  cat > "\/etc\/services.d\/\$SERVICE_NAME\/run" <<UNIT$/ { found=1; next } found && /^UNIT$/ { exit } found { print }' install.sh)
 [ -n "$template" ]
 eval "cat > \"\$live/run\" <<UNIT
