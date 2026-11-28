@@ -53,6 +53,56 @@ try {
   writeFileSync(shPath, sh);
   writeFileSync(psPath, ps1);
   run('sh', ['-n', shPath]);
+  const openrcUnit = sh.match(/cat > "\/etc\/init\.d\/\$SERVICE_NAME" <<UNIT\n([^]*?)\nUNIT/)?.[1];
+  assert.ok(openrcUnit);
+  const openrcPath = join(temp, 'openrc-unit.sh');
+  writeFileSync(openrcPath, `set -eu
+SERVICE_MARKER='# fixture service'
+AGENT_NAME=polaris-agent
+DEST=/usr/local/lib/polaris-agent/polaris-agent
+CFG=/etc/polaris-agent/config.json
+eval "$(cat <<UNIT
+${openrcUnit}
+UNIT
+)"
+printf '%s\\0' "$command" "$command_args" "$pidfile" "$retry"
+`);
+  const [command, commandArgs, pidfile, retry] = run('sh', [openrcPath]).stdout.split('\0');
+  assert.equal(command, '/usr/local/lib/polaris-agent/polaris-agent');
+  assert.equal(commandArgs, 'run --config /etc/polaris-agent/config.json');
+  assert.equal(pidfile, '/run/polaris-agent.pid');
+  const [stopSignal, graceSeconds, finalSignal, finalSeconds] = retry.split('/');
+  assert.equal(stopSignal, 'TERM');
+  assert.ok(Number(graceSeconds) > 20 + 5, 'allow an in-flight HTTP request and final report to finish');
+  assert.equal(finalSignal, 'KILL');
+  assert.ok(Number(finalSeconds) > 0, 'wait for forced termination before starting a replacement');
+  const registration = sh.slice(sh.indexOf('scope="user"'), sh.indexOf('if [ "$REGISTER_COMMAND" = 1 ]; then'));
+  assert.ok(registration.includes('record-installation'));
+  const registrationPath = join(temp, 'registration.sh');
+  writeFileSync(registrationPath, `set -eu
+record_arguments() { printf '%s\\0' "$@"; }
+die() { printf '%s\\n' "$*" >&2; exit 1; }
+DEST=record_arguments
+CFG='/etc/polaris-agent/config.json'
+SERVICE_MANAGER=openrc
+SERVICE_NAME=polaris-agent
+MODE=system
+IS_ROOT=1
+INSTALL_DIR="$1"
+LOG_PATH='/var/log/polaris-agent.log'
+DOCKER_DIR='/tmp/polaris-agent-docker'
+${registration}
+`);
+  for (const installDir of ['', '/opt/polaris custom']) {
+    const argv = run('sh', [registrationPath, installDir]).stdout.split('\0').slice(0, -1);
+    assert.equal(argv[0], 'record-installation');
+    assert.ok(argv.every(value => value.length > 0), 'optional paths must not emit empty arguments');
+    assert.equal(argv[argv.indexOf('--manager') + 1], 'openrc');
+    assert.equal(argv[argv.indexOf('--config') + 1], '/etc/polaris-agent/config.json');
+    assert.equal(argv[argv.indexOf('--scope') + 1], 'system');
+    assert.equal(argv.includes('--install-dir'), Boolean(installDir));
+    if (installDir) assert.equal(argv[argv.indexOf('--install-dir') + 1], installDir);
+  }
   const parser = join(temp, 'parse.ps1');
   writeFileSync(parser, '$t=$null; $e=$null; [System.Management.Automation.Language.Parser]::ParseFile($args[0],[ref]$t,[ref]$e) > $null; if ($e.Count) { $e | Out-String | Write-Error; exit 1 }');
   run(process.platform === 'win32' ? 'powershell.exe' : 'pwsh', ['-NoProfile', '-NonInteractive', '-File', parser, psPath]);

@@ -40,13 +40,13 @@ pub fn requested() -> bool {
 /// wakes on the same signal.
 /// 请求停止时返回；可重复调用，所有调用者都会被同一信号唤醒。
 pub async fn wait() {
-    // Checked first: a signal that arrived before this call would otherwise be
-    // missed and the caller would park forever.
-    // 先检查标志，避免漏掉调用之前的信号并无限等待。
+    // Subscribe before checking the flag so a concurrent signal cannot be missed.
+    // 先订阅再检查标志，避免漏掉并发到达的停止信号。
+    let notified = notify().notified();
     if requested() {
         return;
     }
-    notify().notified().await;
+    notified.await;
 }
 
 /// Flag a shutdown and wake everyone waiting. Called from the signal handler.

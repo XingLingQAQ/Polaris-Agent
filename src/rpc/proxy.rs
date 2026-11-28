@@ -1,7 +1,7 @@
 //! Proxy support for the WebSocket transport: an HTTP CONNECT tunnel honouring
 //! the standard `*_PROXY`/`NO_PROXY` variables.
 //!
-//! `ureq` covers the HTTP fallback through `proxy-from-env`; `tokio-tungstenite`
+//! HTTP fallback uses the same explicit proxy selection; `tokio-tungstenite`
 //! takes no proxy, so the TCP connection is established first and TLS/WebSocket
 //! run on top. SOCKS is not implemented and is reported, not silently ignored.
 //! WebSocket 代理需要先建 CONNECT 隧道；不支持 SOCKS，遇到会明确报告。
@@ -135,8 +135,8 @@ impl Proxy {
         }))
     }
 
-    pub fn to_ureq_proxy(&self) -> Result<ureq::Proxy> {
-        ureq::Proxy::new(&self.proxy_url).context("invalid selected HTTP proxy")
+    pub fn to_reqwest_proxy(&self) -> Result<reqwest::Proxy> {
+        reqwest::Proxy::all(&self.proxy_url).context("invalid selected HTTP proxy")
     }
 
     /// Open a CONNECT tunnel and return the stream positioned after the proxy headers. / 建立 CONNECT 隧道，返回定位在代理响应头之后的流。
@@ -148,7 +148,7 @@ impl Proxy {
             .port_or_known_default()
             .context("the endpoint URL has no port and its scheme implies none")?;
 
-        let mut stream = TcpStream::connect((self.host.as_str(), self.port))
+        let mut stream = super::tcp::connect(self.host.as_str(), self.port)
             .await
             .with_context(|| format!("connecting to proxy {}:{}", self.host, self.port))?;
 

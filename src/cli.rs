@@ -4,11 +4,15 @@ use crate::{
 };
 use anyhow::Result;
 use clap::Subcommand;
-use std::path::PathBuf;
+use std::{io::IsTerminal, path::PathBuf};
 
 /// 配置日志输出；指定文件不存在时先以私有权限创建。
 /// Configure logging; create a missing log file with private permissions.
 pub fn initialize_logging(log_file: Option<PathBuf>) -> Result<()> {
+    let filter = tracing_subscriber::EnvFilter::builder()
+        .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
+        .from_env_lossy();
+    let subscriber = tracing_subscriber::fmt().with_env_filter(filter).with_ansi(std::io::stdout().is_terminal());
     if let Some(path) = log_file {
         if let Some(parent) = path
             .parent()
@@ -26,12 +30,12 @@ pub fn initialize_logging(log_file: Option<PathBuf>) -> Result<()> {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        tracing_subscriber::fmt()
+        subscriber
             .with_ansi(false)
             .with_writer(std::sync::Mutex::new(options.open(path)?))
             .init();
     } else {
-        tracing_subscriber::fmt::init();
+        subscriber.init();
     }
     Ok(())
 }

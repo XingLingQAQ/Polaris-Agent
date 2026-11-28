@@ -13,6 +13,7 @@ pub mod queue;
 pub mod rpc;
 pub mod runtime_config;
 pub mod restart;
+pub mod retry;
 pub mod shutdown;
 pub mod sysstat;
 pub mod updater;

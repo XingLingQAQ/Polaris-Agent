@@ -19,6 +19,7 @@ use crate::{
     config::Config,
     probe_addons::{AddonRequest, AddonResults},
     rpc::endpoint,
+    retry::{Retry, Rejection},
     updater::UpdateResult,
 };
 
@@ -74,8 +75,9 @@ fn target_client_builder() -> reqwest::ClientBuilder {
 /// 轮询探测任务和控制命令，并通过独立上传循环回传结果。
 /// Poll probe jobs and control commands; return results through a separate upload loop.
 pub async fn run(mut cfg: Config, signals: mpsc::Sender<Signal>) {
-    let Ok((jobs_url, results_url, commands_url)) = job_urls(&cfg) else {
-        return;
+    let (jobs_url, results_url, commands_url) = match job_urls(&cfg) {
+        Ok(urls) => urls,
+        Err(error) => { tracing::error!(error = %crate::retry::describe(&error), "cannot configure Agent job endpoints"); return; }
     };
     let control_client = match reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -84,14 +86,14 @@ pub async fn run(mut cfg: Config, signals: mpsc::Sender<Signal>) {
         .build()
     {
         Ok(client) => client,
-        Err(_) => return,
+        Err(error) => { tracing::error!(%error, "cannot initialize Agent control client"); return; }
     };
     // 目标探测使用独立客户端，不继承控制面允许的不安全 TLS 设置。
     // Probe targets with a separate client that does not inherit insecure control-plane TLS settings.
     let target_client = match target_client_builder().build()
     {
         Ok(client) => client,
-        Err(_) => return,
+        Err(error) => { tracing::error!(%error, "cannot initialize probe target client"); return; }
     };
     let (result_tx, result_rx) = mpsc::channel(MAX_QUEUE);
     tokio::spawn(upload_loop(control_client.clone(), results_url, result_rx));
@@ -104,31 +106,30 @@ pub async fn run(mut cfg: Config, signals: mpsc::Sender<Signal>) {
         command_rx,
     ));
     let mut ticker = tokio::time::interval(POLL_INTERVAL);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut polling = Retry::new(POLL_INTERVAL, Duration::from_secs(300));
+    let mut config_retry = Retry::new(POLL_INTERVAL, Duration::from_secs(300));
     let mut configuration = crate::runtime_config::SyncState::new(&cfg);
     loop {
         ticker.tick().await;
-        if configuration
-            .synchronize(&control_client, &mut cfg, &signals)
-            .await
-            .is_err()
-        {
-            tracing::debug!("runtime configuration synchronization deferred");
+        if config_retry.ready() {
+            match configuration.synchronize(&control_client, &mut cfg, &signals).await {
+                Ok(()) => config_retry.success("configuration exchange"),
+                Err(error) => { config_retry.fail(&error, "configuration exchange"); }
+            }
         }
-        let response = match control_client
-            .get(jobs_url.clone())
-            .timeout(Duration::from_secs(15))
-            .send()
-            .await
-        {
-            Ok(response) if response.status().is_success() => response,
-            _ => continue,
-        };
-        let bytes = match read_limited(response, MAX_BODY).await {
-            Ok(bytes) => bytes,
-            Err(_) => continue,
-        };
-        let Ok(valid) = decode_jobs(&bytes) else {
-            continue;
+        if !polling.ready() { continue; }
+        let fetched = async {
+            let response = control_client.get(jobs_url.clone()).timeout(Duration::from_secs(15))
+                .send().await.map_err(reqwest::Error::without_url)?;
+            if !response.status().is_success() { return Err(Rejection::from_response(&response).into()); }
+            let bytes = read_limited(response, MAX_BODY).await?;
+            let valid = decode_jobs(&bytes)?;
+            Ok::<_, anyhow::Error>((bytes, valid))
+        }.await;
+        let (bytes, valid) = match fetched {
+            Ok(result) => { polling.success("job polling"); result }
+            Err(error) => { polling.fail(&error, "job polling"); continue; }
         };
         // Worth stopping the jobs for: the batch belongs to the machine this
         // command is about to restart or replace.
@@ -367,8 +368,8 @@ async fn upload_loop<T: Reportable>(
 ) {
     let mut pending = VecDeque::new();
     let mut retrying = false;
-    let mut retry = tokio::time::interval(RESULT_RETRY_INTERVAL);
-    retry.tick().await;
+    let mut retry = Retry::new(RESULT_RETRY_INTERVAL, Duration::from_secs(300));
+    let mut closed = false;
     loop {
         if pending.is_empty() {
             match incoming.recv().await {
@@ -377,19 +378,17 @@ async fn upload_loop<T: Reportable>(
             }
         }
         if !retrying {
-            if upload_pending(&client, &url, &mut pending).await.is_err() {
-                tracing::warn!("probe result delivery failed; retaining results for retry");
-                retrying = true;
-            } else {
-                continue;
+            match upload_pending(&client, &url, &mut pending).await {
+                Err(error) => { retry.fail(&error, "result delivery"); retrying = true; }
+                Ok(()) => { retry.success("result delivery"); if closed { return; } continue; }
             }
         }
         tokio::select! {
-            result = incoming.recv(), if pending.len() < MAX_QUEUE => match result {
+            result = incoming.recv(), if !closed && pending.len() < MAX_QUEUE => match result {
                 Some(result) => pending.push_back(result),
-                None => return,
+                None => closed = true,
             },
-            _ = retry.tick() => retrying = false,
+            _ = tokio::time::sleep_until(retry.deadline()) => retrying = false,
         }
     }
 }
@@ -406,8 +405,10 @@ async fn upload_pending<T: Reportable>(
             .timeout(Duration::from_secs(10))
             .send()
             .await
+            .map_err(reqwest::Error::without_url)
             .context("probe result upload failed")?;
         if !response.status().is_success() {
+            let rejection = Rejection::from_response(&response);
             let status = response.status();
             let body = read_limited(response, 4096).await;
             if let Ok(body) = body {
@@ -420,7 +421,7 @@ async fn upload_pending<T: Reportable>(
                     continue;
                 }
             }
-            anyhow::bail!("probe result rejected: HTTP {}", status)
+            return Err(rejection.into());
         }
         let body = read_limited(response, 4096).await?;
         T::ack(&body)?;
@@ -708,7 +709,7 @@ pub(crate) async fn read_limited(response: reqwest::Response, limit: usize) -> R
     let mut stream = response.bytes_stream();
     let mut body = Vec::new();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.context("response body read failed")?;
+        let chunk = chunk.map_err(reqwest::Error::without_url).context("response body read failed")?;
         if body.len() + chunk.len() > limit {
             anyhow::bail!("response body too large")
         }

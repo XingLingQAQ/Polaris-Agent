@@ -8,7 +8,7 @@ use anyhow::{Context as _, Result};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{
-    client_async_tls_with_config, connect_async_tls_with_config, Connector, MaybeTlsStream,
+    client_async_tls_with_config, Connector, MaybeTlsStream,
     WebSocketStream,
 };
 use tracing::{debug, warn};
@@ -22,7 +22,6 @@ type Ws = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const SEND_TIMEOUT: Duration = Duration::from_secs(15);
-const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 /// One WebSocket connection.
 /// 单个 WebSocket 连接。
@@ -32,55 +31,19 @@ pub struct AgentClient {
 }
 
 impl AgentClient {
-    /// Connect with three attempts; connect_with_attempts accepts a separate retry budget.
-    /// 最多尝试连接三次；connect_with_attempts 可指定独立的重试次数。
+    /// One attempt; the reporting supervisor owns retries.
+    /// 单次连接，重试由上报主管理循环负责。
     pub async fn connect(cfg: &Config) -> Result<Self> {
-        Self::connect_with_attempts(cfg, 3).await
-    }
-
-    /// Connect, trying at most `attempts` times.
-    /// 最多尝试连接 `attempts` 次。
-    pub async fn connect_with_attempts(cfg: &Config, attempts: u32) -> Result<Self> {
         let url = build_url(cfg)?;
-        let mut attempt = 0u32;
-        let mut backoff = Duration::from_secs(1);
-        let max_attempts = attempts.max(1);
-
-        loop {
-            attempt += 1;
-            debug!(attempt, "connecting");
-            let outcome = tokio::time::timeout(CONNECT_TIMEOUT, connect_once(&url, cfg)).await;
-
-            match outcome {
-                Ok(Ok(ws)) => {
-                    debug!("connected");
-                    return Ok(Self { ws, next_id: 1 });
-                }
-                Ok(Err(failure)) => {
-                    // Only handshake failures are terminal; a status-bearing failure means the server was reached. / 只有握手失败才算终止；能拿到状态码说明已到达服务器。
-                    if let ConnectFailure::Handshake(e) = &failure {
-                        // A rejected token is terminal; retrying hides the real cause. / Token 被拒绝即终止；重试只会掩盖原因。
-                        if is_auth_rejection(e) {
-                            anyhow::bail!(
-                                "server rejected the token (HTTP 401). Check --token against the console."
-                            );
-                        }
-                        // A 404 on the upgrade means the endpoint is wrong; report it, do not retry. / 升级返回 404 表示端点错误；报告而不是重试。
-                        if is_not_found(e) {
-                            anyhow::bail!("no WebSocket endpoint (HTTP 404). Check --endpoint.");
-                        }
-                    }
-                    warn!(err = %failure, attempt, "connect failed");
-                }
-                Err(_) => {
-                    warn!(attempt, "connect timed out");
-                }
+        debug!("connecting websocket");
+        match tokio::time::timeout(CONNECT_TIMEOUT, connect_once(&url, cfg)).await {
+            Ok(Ok(ws)) => Ok(Self { ws, next_id: 1 }),
+            Ok(Err(ConnectFailure::Handshake(tokio_tungstenite::tungstenite::Error::Http(response)))) => {
+                Err(crate::retry::Rejection::new(response.status().as_u16(),
+                    response.headers().get("retry-after").and_then(|value| value.to_str().ok())).into())
             }
-            if attempt >= max_attempts {
-                anyhow::bail!("failed to connect after {attempt} attempt(s)");
-            }
-            tokio::time::sleep(backoff).await;
-            backoff = (backoff * 2).min(MAX_BACKOFF);
+            Ok(Err(error)) => Err(anyhow::anyhow!("{error}")),
+            Err(_) => anyhow::bail!("WebSocket connection timed out after 15 seconds"),
         }
     }
 
@@ -134,6 +97,7 @@ impl AgentClient {
                         if deferred && result["ignored"] == true {
                             anyhow::bail!("deferred acknowledgement cannot be ignored");
                         }
+                        debug!(method = %req.method, deferred, ignored = %result["ignored"], "websocket report acknowledged");
                         return Ok(!deferred);
                     }
                     anyhow::bail!("websocket request was rejected")
@@ -183,27 +147,6 @@ impl AgentClient {
                 None | Some(Err(_)) => return None,
             }
         }
-    }
-}
-
-/// Bad token: the server answers the handshake with 401. / Token 错误：服务端在握手时返回 401。
-fn is_auth_rejection(e: &tokio_tungstenite::tungstenite::Error) -> bool {
-    use tokio_tungstenite::tungstenite::Error;
-    match e {
-        Error::Http(resp) => matches!(resp.status().as_u16(), 401 | 403),
-        _ => false,
-    }
-}
-
-/// The endpoint is not there. Also terminal: retrying a wrong URL cannot fix
-/// it, and on a network that blocks WebSocket this is the shape the refusal
-/// most often takes once a proxy has rewritten the request.
-/// 端点不存在时停止重试；代理改写请求后阻止 WebSocket 也常表现为此错误。
-fn is_not_found(e: &tokio_tungstenite::tungstenite::Error) -> bool {
-    use tokio_tungstenite::tungstenite::Error;
-    match e {
-        Error::Http(resp) => resp.status().as_u16() == 404,
-        _ => false,
     }
 }
 
@@ -308,8 +251,9 @@ async fn connect_once(url: &Url, cfg: &Config) -> Result<Ws, ConnectFailure> {
 
     match Proxy::for_url(url) {
         None => {
+            let stream = direct_stream(url).await.map_err(ConnectFailure::Transport)?;
             let (ws, _resp) =
-                connect_async_tls_with_config(url.as_str(), None, false, Some(connector))
+                client_async_tls_with_config(url.as_str(), stream, None, Some(connector))
                     .await
                     .map_err(ConnectFailure::Handshake)?;
             Ok(ws)
@@ -328,6 +272,12 @@ async fn connect_once(url: &Url, cfg: &Config) -> Result<Ws, ConnectFailure> {
             Ok(ws)
         }
     }
+}
+
+async fn direct_stream(url: &Url) -> Result<tokio::net::TcpStream> {
+    let host = url.host_str().context("the endpoint URL has no host")?;
+    let port = url.port_or_known_default().context("the endpoint URL has no port")?;
+    super::tcp::connect(host, port).await.context("connecting to endpoint")
 }
 
 fn build_url(cfg: &Config) -> Result<Url> {
@@ -470,7 +420,9 @@ mod tests {
                 tls_connector(false).unwrap()
             };
             let host = if correct_name { "localhost" } else { "127.0.0.1" };
-            let result = connect_async_tls_with_config(format!("wss://{host}:{port}"), None, false, Some(connector)).await;
+            let url = Url::parse(&format!("wss://{host}:{port}")).unwrap();
+            let stream = direct_stream(&url).await.unwrap();
+            let result = client_async_tls_with_config(url.as_str(), stream, None, Some(connector)).await;
             if trusted && correct_name {
                 let (ws, _) = result.unwrap();
                 let mut client = AgentClient { ws, next_id: 1 };
