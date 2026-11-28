@@ -7,8 +7,8 @@ SERVICE_NAME="polaris-supervision-test-$$"
 AGENT_NAME=polaris-agent
 SERVICE_MARKER="# polaris-agent-managed:$SERVICE_NAME:"
 fixture=$(mktemp -d)
-DEST="$fixture/agent"
-CFG="$fixture/config.json"
+DEST="$fixture/agent binary"
+CFG="$fixture/config file.json"
 LOG_PATH="$fixture/output.log"
 unit="/etc/init.d/$SERVICE_NAME"
 [ ! -e "$unit" ] || exit 1
@@ -23,6 +23,7 @@ trap 'exit 1' HUP INT TERM
 write_agent() {
   cat > "$DEST.next" <<EOF
 #!/bin/sh
+[ "\$#" = 3 ] && [ "\$1" = run ] && [ "\$2" = --config ] && [ "\$3" = '$CFG' ] || exit 70
 trap 'exit 0' TERM INT
 printf '%s %s\n' "\$\$" '$1' >> '$fixture/runs'
 while :; do sleep 1; done

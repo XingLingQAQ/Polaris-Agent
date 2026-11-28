@@ -52,6 +52,8 @@ case "$2" in
     [ "$supervisor" = supervise-daemon ] && [ "$respawn_max" = 0 ] && [ "$respawn_delay" = 5 ] || exit 91
     [ "\${command_background:-false}" = false ] || exit 92
     [ "$pidfile" = /run/fixture-custom.pid ] && [ "$output_log" = /var/log/fixture-custom.log ] && [ "$error_log" = "$output_log" ] || exit 93
+    eval "set -- $command_args"
+    [ "$#" = 3 ] && [ "$1" = run ] && [ "$2" = --config ] && [ "$3" = '/opt/polaris agent/config.json' ] || exit 95
     [ "$FIXTURE_SCENARIO" != start-failed ] || exit 1 ;;
   status) [ "$FIXTURE_SCENARIO" != status-failed ] || exit 32 ;;
   *) exit 94 ;;
@@ -71,8 +73,8 @@ PATH="$PWD/bin:$PATH"
 AGENT_NAME=polaris-agent
 SERVICE_NAME=fixture-custom
 SERVICE_MARKER='${marker}'
-DEST=/opt/polaris-agent/polaris-agent
-CFG=/opt/polaris-agent/config.json
+DEST='/opt/polaris agent/polaris-agent'
+CFG='/opt/polaris agent/config.json'
 die() { printf '%s\\n' "$*" >&2; exit 1; }
 set_service_tier() { printf '%s' "$1" > "$FIXTURE_TIER"; }
 ${branch}

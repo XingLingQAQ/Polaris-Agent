@@ -616,11 +616,12 @@ printf '%s:%s
 chmod 600 "$INSTALL_MARKER"
 say "  wrote $CFG (mode 600 - it holds the token)"
 
-RUN=""$DEST" run --config "$CFG""
+RUN="\"$DEST\" run --config \"$CFG\""
 
 check_unit_paths() {
-  printf '%s
-%s' "$DEST" "$CFG" | LC_ALL=C grep -Eq '[^A-Za-z0-9._/ -]' && die "service paths contain characters unsupported by systemd unit quoting"
+  if printf '%s\n' "$DEST" "$CFG" | LC_ALL=C grep -Eq '[^A-Za-z0-9._/ -]'; then
+    die "service paths contain characters unsupported by systemd unit quoting"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -808,11 +809,6 @@ elif [ "$HAVE_SYSTEMD" = 1 ] && [ "$IS_ROOT" = 1 ]; then
   SERVICE_MANAGER="systemd"
   check_unit_paths
   [ ! -e "/etc/systemd/system/$SERVICE_NAME.service" ] || grep -Fxq "$SERVICE_MARKER" "/etc/systemd/system/$SERVICE_NAME.service" || die "refusing to overwrite existing service"
-  UNIT_WRITE_PATHS="/run"
-  if [ "$EFFECTIVE_AUTO_UPDATE" = 1 ]; then
-    escaped_bin_dir=$(printf '%s' "$BIN_DIR" | sed 's/ /\x20/g')
-    UNIT_WRITE_PATHS="$UNIT_WRITE_PATHS $escaped_bin_dir"
-  fi
   cat > "/etc/systemd/system/$SERVICE_NAME.service" <<UNIT
 $SERVICE_MARKER
 [Unit]
@@ -825,14 +821,11 @@ Type=simple
 ExecStart=$RUN
 Restart=always
 RestartSec=5
-# The probe reads host metrics and nothing else; it needs no privileges and
-# no writable filesystem.
-# Agent 仅读取主机指标，不需要特权或可写文件系统。
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=$UNIT_WRITE_PATHS
+ReadWritePaths=/run "$BIN_DIR" "$CFG_DIR"
 
 [Install]
 WantedBy=multi-user.target
@@ -863,7 +856,7 @@ elif [ "$HAVE_OPENRC" = 1 ] && [ "$IS_ROOT" = 1 ]; then
 $SERVICE_MARKER
 name="$AGENT_NAME"
 command="$DEST"
-command_args="run --config "$CFG""
+command_args="run --config \\"$CFG\\""
 supervisor="supervise-daemon"
 pidfile="/run/$SERVICE_NAME.pid"
 retry="TERM/30/KILL/5"
@@ -914,14 +907,20 @@ elif [ "$HAVE_S6" = 1 ] && [ "$IS_ROOT" = 1 ]; then
   mkdir -p "/etc/services.d/$SERVICE_NAME"
   [ ! -e "/etc/services.d/$SERVICE_NAME/run" ] || grep -Fxq "$SERVICE_MARKER" "/etc/services.d/$SERVICE_NAME/run" || die "refusing to overwrite existing s6 service"
   cat > "/etc/services.d/$SERVICE_NAME/run" <<UNIT
-$SERVICE_MARKER
 #!/bin/sh
+$SERVICE_MARKER
 exec $RUN --log-file "$LOG_PATH"
 UNIT
   chmod 755 "/etc/services.d/$SERVICE_NAME/run"
   TIER="A"
   set_service_tier "$TIER"
   if [ -d "/run/service/$SERVICE_NAME" ] && command -v s6-svc >/dev/null 2>&1; then
+    [ ! -e "/run/service/$SERVICE_NAME/run" ] || grep -Fxq "$SERVICE_MARKER" "/run/service/$SERVICE_NAME/run" || die "refusing to overwrite existing live s6 service"
+    live_run=$(mktemp "/run/service/$SERVICE_NAME/.run.XXXXXX") || die "cannot stage live s6 service"
+    if ! cp "/etc/services.d/$SERVICE_NAME/run" "$live_run" || ! chmod 755 "$live_run" || ! mv -f "$live_run" "/run/service/$SERVICE_NAME/run"; then
+      rm -f "$live_run"
+      die "cannot update live s6 service $SERVICE_NAME"
+    fi
     s6-svc -r "/run/service/$SERVICE_NAME" || die "cannot restart s6 service $SERVICE_NAME"
     NOTE="registered with s6-overlay - it will run the probe and restart it"
   else

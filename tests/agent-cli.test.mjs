@@ -56,6 +56,10 @@ try {
   }
   assert.match(invoke(['service', 'restart', '--config', config, '--dry-run']).stdout, /systemctl --user restart polaris-fixture/);
   assert.match(invoke(['service', 'logs', '--config', config, '--dry-run', '--follow', '--lines', '12']).stdout, /journalctl --user -u polaris-fixture -n 12 --no-pager --follow/);
+  record('s6', 'system');
+  for (const [action, command] of [['start', 's6-svc -u'], ['stop', 's6-svc -d'], ['restart', 's6-svc -r'], ['status', 's6-svstat']]) {
+    assert.equal(invoke([action, '--config', config, '--dry-run']).stdout.trim(), `${command} /run/service/polaris-fixture`);
+  }
   record('windows-task', 'system');
   assert.match(invoke(['service', 'restart', '--config', config, '--dry-run']).stdout, /\/End[\s\S]*\/Run/);
   record('launchd');

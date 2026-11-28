@@ -128,7 +128,7 @@ fn plan(installation: &Installation, action: &ServiceAction) -> Result<Vec<(Stri
             }
         }
         "s6" => {
-            let directory = format!("/etc/services.d/{name}");
+            let directory = format!("/run/service/{name}");
             match action {
                 ServiceAction::Status => single("s6-svstat", vec![directory]),
                 ServiceAction::Logs { .. } => Ok(vec![]),

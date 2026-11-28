@@ -24,6 +24,12 @@ jobs:
           node-version: 24
       - run: cargo build --locked
       - run: npm test
+      - name: systemd and s6 service lifecycle
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y s6
+          sudo sh tests/linux-services.test.sh
       - name: OpenRC supervision
         if: runner.os == 'Linux'
         run: |

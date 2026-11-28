@@ -10,7 +10,7 @@
     "test": "cargo test --locked --all-targets -- --test-threads=1 && npm run test:cli && npm run test:manifest && npm run test:windows && npm run test:installer",
     "test:cli": "node tests/agent-cli.test.mjs",
     "test:manifest": "node tests/agent-manifest.test.mjs",
-    "test:installer": "node tests/install-script.test.mjs && node tests/install-script-execution.test.mjs && node tests/openrc-installer.test.mjs",
+    "test:installer": "node tests/install-script.test.mjs && node tests/install-script-execution.test.mjs && node tests/openrc-installer.test.mjs && node tests/service-installer.test.mjs",
     "test:windows": "node tests/windows-update.test.mjs && node tests/windows-restart.test.mjs"
   }
 }
