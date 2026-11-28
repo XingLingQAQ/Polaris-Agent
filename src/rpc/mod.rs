@@ -12,6 +12,7 @@ pub mod endpoint;
 pub mod http;
 pub mod protocol;
 pub mod proxy;
+mod tcp;
 pub mod ws;
 
 pub use http::HttpTransport;

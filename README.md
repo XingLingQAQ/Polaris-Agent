@@ -201,6 +201,10 @@ Use the original scope, service name and install directory. The uninstaller chec
 
 ## Data and connectivity
 
+Connection and report failures retry indefinitely until the service is stopped. Reporting retries use jittered exponential backoff from roughly 5 seconds up to 60 seconds for network failures. After three failed WebSocket sessions, the Agent switches to HTTP and keeps checking whether WebSocket has recovered. A 401 or 403 response keeps the Agent running with a five-minute cooldown; check the machine token and access rules. Server `Retry-After` instructions extend the delay, capped at one hour.
+
+Logs default to `info`, including startup, registration, retry delays and recovery. Repeated failures in each operation produce at most one warning per minute; `RUST_LOG=debug` includes individual retries and report acknowledgements. Set the environment variable in the service configuration and restart the service. Use `pa logs -f` to follow progress.
+
 - Load, connection counts and process counts are separate metrics, not percentages. Windows load is a smoothed processor queue length; Linux and macOS use system load averages, so the numbers are not directly comparable.
 - Unreadable metrics display `—`; a measured zero stays `0`.
 - Pending snapshots and minute summaries live in memory: up to 4096 samples, 60 snapshots (of which at most 30 may be ahead of server time) and 128 minute buckets. When a buffer is full the Agent logs a warning and may drop data, and an abnormal exit loses unconfirmed data.

@@ -229,12 +229,10 @@ impl SyncState {
                 "auto_update_supported": auto_update_supported(cfg),
             },
             "error": self.error,
-        })).send().await?;
-        anyhow::ensure!(
-            response.status().is_success(),
-            "configuration exchange rejected: {}",
-            response.status()
-        );
+        })).send().await.map_err(reqwest::Error::without_url)?;
+        if !response.status().is_success() {
+            return Err(crate::retry::Rejection::from_response(&response).into());
+        }
         let bytes = crate::probes::read_limited(response, 64 * 1024).await?;
         let reply: Reply = serde_json::from_slice(&bytes)?;
         Ok(reply.runtime_config)

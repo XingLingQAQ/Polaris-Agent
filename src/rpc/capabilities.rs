@@ -90,10 +90,12 @@ pub async fn discover(cfg: &Config) -> Result<Runtime> {
         .context("build capability client")?;
     let mut last_error = None;
     for attempt in 1..=MAX_ATTEMPTS {
+        if attempt > 1 { tokio::time::sleep(Duration::from_millis(250)).await; }
         match fetch(&client, &url).await {
             Ok(runtime) => return Ok(runtime),
             Err(error) => {
-                debug!(attempt, err = %error, "capability discovery attempt failed");
+                debug!(attempt, err = %crate::retry::describe(&error), "capability discovery attempt failed");
+                if error.downcast_ref::<crate::retry::Rejection>().is_some() { return Err(error); }
                 last_error = Some(error);
             }
         }
@@ -107,12 +109,9 @@ async fn fetch(client: &reqwest::Client, url: &Url) -> Result<Runtime> {
         .timeout(DISCOVERY_TIMEOUT)
         .send()
         .await
+        .map_err(reqwest::Error::without_url)
         .context("capability request failed")?;
-    anyhow::ensure!(
-        response.status().is_success(),
-        "capability request returned {}",
-        response.status()
-    );
+    if !response.status().is_success() { return Err(crate::retry::Rejection::from_response(&response).into()); }
     let bytes = crate::probes::read_limited(response, MAX_BODY).await?;
     parse_runtime(&bytes)
 }
@@ -169,6 +168,27 @@ mod tests {
             runtime_overrides: Default::default(),
             collect_gpus: false, collect_sensors: false,
         }
+    }
+
+    #[tokio::test]
+    async fn discovery_error_keeps_the_cause_without_the_request_url() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = Url::parse(&format!("http://{}/private-path?token=fixture-secret", listener.local_addr().unwrap())).unwrap();
+        let server = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            stream.read(&mut request).await.unwrap();
+            stream.write_all(b"not an HTTP response\r\n\r\n").await.unwrap();
+        });
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let error = fetch(&client, &url).await.unwrap_err();
+        server.await.unwrap();
+        let message = format!("{error:#}");
+        assert!(message.starts_with("capability request failed: "));
+        assert!(error.chain().count() > 2);
+        assert!(!message.contains("private-path"));
+        assert!(!message.contains("fixture-secret"));
     }
 
     #[test]

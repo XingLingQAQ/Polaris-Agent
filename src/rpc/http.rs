@@ -34,7 +34,7 @@ const MAX_POST_WORK: usize = 40;
 /// 将帧发送到 HTTP 端点。
 pub struct HttpTransport {
     url: String,
-    agent: ureq::Agent,
+    client: reqwest::Client,
     insecure_https: bool,
 }
 
@@ -42,19 +42,21 @@ impl HttpTransport {
     pub fn new(cfg: &Config) -> Result<Self> {
         let endpoints = endpoint::derive(cfg)?;
         let proxy = Proxy::for_url(&endpoints.http_push)
-            .map(|proxy| proxy.to_ureq_proxy())
+            .map(|proxy| proxy.to_reqwest_proxy())
             .transpose()?;
-        let mut agent = ureq::AgentBuilder::new()
-            .try_proxy_from_env(false)
+        let mut client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(5))
             .timeout(REQUEST_TIMEOUT)
             .user_agent(concat!("polaris-agent/", env!("CARGO_PKG_VERSION")));
         if let Some(proxy) = proxy {
-            agent = agent.proxy(proxy);
+            client = client.proxy(proxy);
         }
         Ok(Self {
             url: endpoints.http_push.to_string(),
             insecure_https: cfg.insecure && endpoints.http_push.scheme() == "https",
-            agent: agent.build(),
+            client: client.build().context("build HTTP push client")?,
         })
     }
 
@@ -93,29 +95,16 @@ impl HttpTransport {
     }
 
     async fn post(&self, body: String, expected: usize) -> Result<(u16, PushResult)> {
-        let agent = self.agent.clone();
-        let url = self.url.clone();
-        tokio::task::spawn_blocking(move || {
-            match agent
-                .post(&url)
-                .set("content-type", "application/json")
-                .send_string(&body)
-            {
-                Ok(response) => {
-                    let status = response.status();
-                    let body = response.into_string().context("read HTTP push response")?;
-                    let result = parse_success(&body, expected)?;
-                    Ok((status, result))
-                }
-                Err(ureq::Error::Status(code, response)) => {
-                    let detail = response.into_string().unwrap_or_default();
-                    anyhow::bail!("HTTP push rejected: {code} {detail}");
-                }
-                Err(error) => Err(anyhow::Error::new(error).context("HTTP push failed")),
-            }
-        })
-        .await
-        .context("HTTP worker panicked")?
+        let response = self.client.post(&self.url)
+            .header("content-type", "application/json").body(body).send().await
+            .map_err(reqwest::Error::without_url).context("HTTP push failed")?;
+        if !response.status().is_success() {
+            return Err(crate::retry::Rejection::from_response(&response).into());
+        }
+        let status = response.status().as_u16();
+        let bytes = crate::probes::read_limited(response, 64 * 1024).await?;
+        let result = parse_success(std::str::from_utf8(&bytes)?, expected)?;
+        Ok((status, result))
     }
 }
 
@@ -192,6 +181,25 @@ fn parse_success(body: &str, expected: usize) -> Result<PushResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn rejection_keeps_retry_after_without_echoing_sensitive_response() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0; 4096];
+            socket.read(&mut buffer).await.unwrap();
+            socket.write_all(b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 120\r\nContent-Length: 12\r\nConnection: close\r\n\r\nsecret-token").await.unwrap();
+        });
+        let transport = HttpTransport { url: format!("http://{address}/secret-token"),
+            client: reqwest::Client::builder().no_proxy().build().unwrap(), insecure_https: false };
+        let error = transport.post("{}".into(), 1).await.err().unwrap();
+        assert_eq!(error.downcast_ref::<crate::retry::Rejection>().unwrap().retry_after, Some(Duration::from_secs(120)));
+        assert!(!crate::retry::describe(&error).contains("secret-token"));
+        server.await.unwrap();
+    }
     use serde_json::json;
 
     fn frame(method: &str, summaries: usize) -> RpcRequest {

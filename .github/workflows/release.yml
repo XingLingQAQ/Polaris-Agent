@@ -91,5 +91,12 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          gh release create "$GITHUB_REF_NAME" --verify-tag --draft --generate-notes release/*
-          gh release edit "$GITHUB_REF_NAME" --draft=false
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --draft=true
+            gh release upload "$GITHUB_REF_NAME" release/polaris-agent-* --clobber
+            gh release upload "$GITHUB_REF_NAME" release/manifest.json --clobber
+            gh release edit "$GITHUB_REF_NAME" --target "$GITHUB_SHA" --draft=false --latest
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --draft --generate-notes release/*
+            gh release edit "$GITHUB_REF_NAME" --draft=false
+          fi

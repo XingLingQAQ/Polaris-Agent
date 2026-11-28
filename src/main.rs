@@ -12,6 +12,7 @@ use polaris_agent::config::{CliArgs, Config};
 use polaris_agent::queue::FrameQueue;
 use polaris_agent::rpc::{self, AgentClient, HttpTransport};
 use polaris_agent::shutdown;
+use polaris_agent::retry::{Retry, describe};
 use polaris_agent::sysstat;
 
 /// Wait after an unexpected failure. Long enough not to spin against a server
@@ -87,11 +88,11 @@ async fn check_auto_update(cfg: &Config, schedule: &mut UpdateSchedule) -> bool 
             }
         }
         Ok(Err(err)) => {
-            warn!(err = %err, "automatic Agent update failed; retrying after backoff");
+            warn!(err = %describe(&err), "automatic Agent update failed; next scheduled check in 24 hours");
             false
         }
         Err(err) => {
-            warn!(err = %err, "automatic Agent update worker failed; retrying after backoff");
+            warn!(err = %err, "automatic Agent update worker failed; next scheduled check in 24 hours");
             false
         }
     }
@@ -106,14 +107,16 @@ async fn recovery_loop<T, F, Fut>(
     F: FnMut() -> Fut,
     Fut: Future<Output = anyhow::Result<T>>,
 {
+    let mut retry = Retry::new(delay, delay.saturating_mul(4));
+    let mut pause = delay;
     loop {
-        tokio::time::sleep(delay).await;
+        tokio::time::sleep(pause).await;
         match connect().await {
             Ok(client) => {
                 let _ = sender.send(client).await;
                 return;
             }
-            Err(err) => warn!(err = %err, "websocket recovery attempt failed"),
+            Err(err) => pause = retry.fail(&err, "websocket recovery"),
         }
     }
 }
@@ -146,37 +149,37 @@ async fn wait_for_delivery(receipt: tokio::sync::oneshot::Receiver<()>) {
     }
 }
 
-/// 尝试发送剩余报告；未确认的帧放回内存队列。
-/// Attempt to flush remaining reports; restore unacknowledged frames to the in-memory queue.
-async fn flush_http(pending: &mut FrameQueue, http: &HttpTransport) {
-    if pending.is_empty() {
-        return;
-    }
-    let queued = pending.take();
-    match http.send_batch_status(&queued).await {
-        Ok(statuses) => {
-            let deferred: Vec<_> = queued.into_iter().zip(statuses).filter_map(|(frame, delivered)| (!delivered).then_some(frame)).collect();
-            restore_deferred(pending, deferred);
-        },
-        Err(e) => {
-            warn!(err = %e, "http: final flush failed");
-            // Put them back so a caller that reconnects still has them; the
-            // queue is owned above this session.
-            // 队列由会话外持有；放回失败的帧供后续重连使用。
-            pending.restore_front(queued);
-        }
-    }
+fn main() -> anyhow::Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let result = runtime.block_on(agent_main());
+    runtime.shutdown_timeout(Duration::from_secs(1));
+    result
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn agent_main() -> anyhow::Result<()> {
     // Before anything that could block: a stop arriving during startup should
     // still be honoured rather than ignored until the first report.
     // 在可能阻塞的操作前安装处理器，及时响应启动期间的停止请求。
     shutdown::install();
     let args = CliArgs::parse();
-    let Some(mut cfg) = polaris_agent::cli::dispatch(args)? else { return Ok(()); };
+    let Some(cfg) = polaris_agent::cli::dispatch(args)? else { return Ok(()); };
     polaris_agent::cli::initialize_logging(cfg.log_file.clone())?;
+    let running = run_agent(cfg);
+    tokio::pin!(running);
+    tokio::select! {
+        result = &mut running => result,
+        _ = shutdown::wait() => {
+            info!("stopping Agent; allowing up to five seconds for final reports");
+            match tokio::time::timeout(Duration::from_secs(5), &mut running).await {
+                Ok(result) => result,
+                Err(_) => { warn!("shutdown deadline reached; unacknowledged data remains unsent"); Ok(()) }
+            }
+        }
+    }
+}
+
+async fn run_agent(mut cfg: Config) -> anyhow::Result<()> {
+    info!(version = env!("CARGO_PKG_VERSION"), "starting polaris-agent");
 
     // The Worker batches a minute; the Go server expects every sample. Ask the
     // backend which it is before the first sample so the cadence is right from
@@ -189,7 +192,7 @@ async fn main() -> anyhow::Result<()> {
             Some(runtime)
         }
         Err(err) => {
-            warn!(err = %err, "backend runtime discovery failed; keeping the default report interval");
+            warn!(err = %describe(&err), "backend runtime discovery failed; keeping the default report interval");
             None
         }
     };
@@ -200,7 +203,7 @@ async fn main() -> anyhow::Result<()> {
         sample_interval = cfg.sample_interval_secs,
         report_interval = cfg.report_interval_secs,
         version = env!("CARGO_PKG_VERSION"),
-        "starting polaris-agent"
+        "reporting cadence configured"
     );
 
     // One-shot extras: public IP / ISP / region / virtualization. Network
@@ -301,9 +304,8 @@ async fn run_forever(mut cfg: Config, extras: sysstat::AgentExtras) -> anyhow::R
     let (signal_tx, mut signal_rx) = tokio::sync::mpsc::channel(4);
     let probe_task = tokio::spawn(polaris_agent::probes::run(cfg.clone(), signal_tx));
     let _probe_task = AbortOnDrop(probe_task);
-    let mut backoff = RESTART_PAUSE;
+    let mut retry = Retry::new(RESTART_PAUSE, Duration::from_secs(60));
     let mut transport = Transport::WebSocket;
-    let mut ws_failures: u32 = 0;
     let mut recovered_ws = None;
     let mut update_schedule = UpdateSchedule {
         enabled: cfg.auto_update && polaris_agent::runtime_config::auto_update_supported(&cfg),
@@ -339,6 +341,7 @@ async fn run_forever(mut cfg: Config, extras: sysstat::AgentExtras) -> anyhow::R
                     recovered_ws.take(),
                     &mut update_schedule,
                     &mut signal_rx,
+                    &mut retry,
                 ));
                 match futures_util::FutureExt::catch_unwind(attempt).await {
                     Ok(r) => r,
@@ -367,7 +370,7 @@ async fn run_forever(mut cfg: Config, extras: sysstat::AgentExtras) -> anyhow::R
             return Ok(());
         }
 
-        match outcome {
+        let pause = match outcome {
             Ok(SessionEnd::Reconfigured(request)) => {
                 let Some((next, applied)) = request.claim_and_commit() else {
                     continue;
@@ -384,58 +387,64 @@ async fn run_forever(mut cfg: Config, extras: sysstat::AgentExtras) -> anyhow::R
             Ok(SessionEnd::Commanded) => return Ok(()),
             Ok(SessionEnd::Recovered(client)) => {
                 recovered_ws = Some(client);
-                backoff = RESTART_PAUSE;
+                retry.success("websocket");
                 info!("websocket recovered; switching back");
                 transport = Transport::WebSocket;
+                continue;
             }
             Ok(SessionEnd::Ended) if transport == Transport::WebSocket => {
                 // A clean end means the connection dropped, which is ordinary.
                 // 正常结束表示连接断开，属于常见情况。
-                ws_failures = 0;
-                backoff = RESTART_PAUSE;
+                retry.fail(&anyhow::anyhow!("WebSocket session ended"), "websocket")
             }
             Err(e) if transport == Transport::WebSocket => {
-                warn!(err = %e, "websocket session ended with an error");
-                ws_failures += 1;
-                if ws_failures >= WS_ATTEMPTS_BEFORE_FALLBACK {
+                let pause = retry.fail(&e, "websocket");
+                let ws_failures = retry.failures();
+                if ws_failures >= WS_ATTEMPTS_BEFORE_FALLBACK && !polaris_agent::retry::is_rejected(&e) {
                     warn!(
                         attempts = ws_failures,
                         "websocket is not coming up; falling back to HTTP POST"
                     );
                     transport = Transport::Http;
-                    ws_failures = 0;
-                    backoff = RESTART_PAUSE;
+                    if !e.downcast_ref::<polaris_agent::retry::Rejection>().is_some_and(|rejected| rejected.retry_after.is_some()) {
+                        continue;
+                    }
                 }
+                pause
             }
             Ok(SessionEnd::Ended) => {
-                backoff = RESTART_PAUSE;
+                RESTART_PAUSE
             }
             Err(e) => {
-                warn!(err = %e, "http push session ended with an error");
+                retry.fail(&e, "http session")
             }
-        }
+        };
 
-        // While on HTTP, keep testing the socket. A network that blocks
-        // WebSocket may stop, and without this the agent would stay on the
-        // slower transport for the rest of its life.
-        // HTTP 上报期间继续测试 WebSocket，以便网络限制解除后切回。
-        let deadline = tokio::time::Instant::now() + backoff;
+        let deadline = tokio::time::Instant::now() + pause;
         loop {
             tokio::select! {
                 _ = tokio::time::sleep_until(deadline) => break,
                 Some((snapshot, at)) = sampling.samples.recv() => {
                     sampling.latest = record_aggregate(snapshot, at, &mut sampling.aggregator, &mut sampling.finalized);
                 }
+                signal = next_signal(&mut signal_rx) => match signal {
+                    Signal::Reconfigure(request) => {
+                        if let Some((next, applied)) = request.claim_and_commit() {
+                            cfg = *next;
+                            sampling.reconfigure(&cfg).await;
+                            update_schedule.enabled = cfg.auto_update && polaris_agent::runtime_config::auto_update_supported(&cfg);
+                            let _ = applied.send(Ok(()));
+                        }
+                    }
+                    Signal::ReReport => {},
+                    Signal::Exit(receipt) => { wait_for_delivery(receipt).await; return Ok(()); }
+                },
                 _ = shutdown::wait() => {
                     info!("shutdown signalled during backoff - exiting cleanly");
                     return Ok(());
                 }
             }
         }
-        // Capped: a host that cannot reach the server retries every 30s
-        // forever rather than drifting into hourly attempts.
-        // 退避上限为 30 秒，无法连接的主机将每 30 秒持续重试，而不会逐渐延长至每小时。
-        backoff = (backoff * 2).min(Duration::from_secs(30));
     }
 }
 
@@ -450,6 +459,7 @@ async fn session_ws(
     recovered: Option<AgentClient>,
     update_schedule: &mut UpdateSchedule,
     signals: &mut tokio::sync::mpsc::Receiver<Signal>,
+    retry: &mut Retry,
 ) -> anyhow::Result<SessionEnd> {
     let mut client = match recovered {
         Some(client) => client,
@@ -497,6 +507,7 @@ async fn session_ws(
             return Err(err);
         }
     };
+    if delivered { retry.success("websocket reports"); }
     if can_auto_update(delivered, pending, finalized) && samples.is_empty() && check_auto_update(cfg, update_schedule).await {
         stop_and_drain(sampler_task, samples, aggregator, finalized, latest).await;
         flush_final_ws(&mut client, finalized, latest).await;
@@ -559,11 +570,11 @@ async fn session_ws(
             Ok(true) => { acknowledge_summaries(finalized, sent_summaries); true },
             Ok(false) => { queue_snapshot(pending, latest); false },
             Err(e) => {
-                warn!(err = %e, "report send failed; retaining summaries and reconnecting");
                 queue_snapshot(pending, latest);
                 return Err(e);
             }
         };
+        if delivered { retry.success("websocket reports"); }
         if can_auto_update(delivered, pending, finalized) && samples.is_empty() && check_auto_update(cfg, update_schedule).await {
             stop_and_drain(sampler_task, samples, aggregator, finalized, latest).await;
             flush_final_ws(&mut client, finalized, latest).await;
@@ -640,8 +651,15 @@ async fn flush_final_ws(client: &mut AgentClient, finalized: &mut VecDeque<sysst
     }).await;
 }
 
-async fn flush_final_http(http: &HttpTransport, finalized: &mut VecDeque<sysstat::FinalizedAggregate>, latest: &(sysstat::SysSnapshot, i64)) {
+async fn flush_final_http(http: &HttpTransport, pending: &mut FrameQueue, finalized: &mut VecDeque<sysstat::FinalizedAggregate>, latest: &(sysstat::SysSnapshot, i64)) {
     let _ = tokio::time::timeout(Duration::from_secs(5), async {
+        if !pending.is_empty() {
+            let queued = pending.take();
+            match http.send_batch_status(&queued).await {
+                Ok(statuses) => restore_deferred(pending, queued.into_iter().zip(statuses).filter_map(|(frame, delivered)| (!delivered).then_some(frame)).collect()),
+                Err(_) => { pending.restore_front(queued); return; }
+            }
+        }
         loop {
             let (report, count) = queued_report(latest, finalized);
             if !matches!(http.send_status(&report).await, Ok(true)) { break; }
@@ -671,29 +689,6 @@ fn acknowledge_summaries(finalized: &mut VecDeque<sysstat::FinalizedAggregate>, 
     }
 }
 
-// 发送失败保留上次身份确认时间，后续周期仍可重试。
-// Preserve the previous identity timestamp on failure so later ticks can retry.
-async fn handle_re_report(
-    cfg: &Config,
-    extras: &sysstat::AgentExtras,
-    http: &HttpTransport,
-) -> anyhow::Result<Option<tokio::time::Instant>> {
-    let basic = rpc::protocol::build_basic_report(extras, "http", cfg.report_interval_secs)?;
-    match http.send(&basic).await {
-        Ok(()) => {
-            info!("re_report command: posted a fresh basicReport");
-            Ok(Some(tokio::time::Instant::now()))
-        }
-        Err(err) => {
-            warn!(err = %err, "http: re_report basicReport failed");
-            Ok(None)
-        }
-    }
-}
-
-/// HTTP reporting retries queued frames on later report ticks.
-/// Identity is retried until acknowledged and refreshed daily; finalized summaries can backfill minute history.
-/// HTTP 上报在后续周期重试队列；身份确认前持续重试并每日刷新，分钟汇总可用于回填。
 async fn session_http(
     cfg: &Config,
     extras: &sysstat::AgentExtras,
@@ -705,51 +700,26 @@ async fn session_http(
 ) -> anyhow::Result<SessionEnd> {
     let (ws_tx, mut ws_rx) = tokio::sync::mpsc::channel(1);
     let retry_cfg = cfg.clone();
+    let retry_extras = extras.clone();
     let _retry_task = AbortOnDrop(tokio::spawn(recovery_loop(
         WS_RETRY_INTERVAL,
         move || {
             let cfg = retry_cfg.clone();
-            async move { AgentClient::connect(&cfg).await }
+            let extras = retry_extras.clone();
+            async move {
+                let mut client = AgentClient::connect(&cfg).await?;
+                client.send(rpc::protocol::build_basic_report(&extras, "ws", cfg.report_interval_secs)?).await?;
+                Ok(client)
+            }
         },
         ws_tx,
     )));
-    let basic = rpc::protocol::build_basic_report(extras, "http", cfg.report_interval_secs)?;
-    // An announce failure is not fatal here - unlike the socket case, where a
-    // refused upgrade means there is no channel at all. The request may simply
-    // have been unlucky, and the loop below will try again.
-    // HTTP 身份声明失败不致命，可能只是此次请求不顺利，下方循环会重试；
-    // 与 WebSocket 不同，升级被拒绝意味着根本没有通道。
+    let mut retry = Retry::new(RESTART_PAUSE, Duration::from_secs(60));
     let mut last_basic_report = None;
-    if let Err(e) = http.send(&basic).await {
-        warn!(err = %e, "http: basicReport failed; will retry with the first report");
-    } else {
-        info!("basicReport posted over HTTP, agent registered");
-        last_basic_report = Some(tokio::time::Instant::now());
-    }
-
     let SamplingState { aggregator, finalized, latest, samples, sampler_task, .. } = sampling;
     drain_samples(samples, aggregator, finalized, latest);
     let mut report_ticker = tokio::time::interval(Duration::from_secs(cfg.report_interval_secs));
     report_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    report_ticker.tick().await;
-    let (initial_report, sent_summaries) = queued_report(latest, finalized);
-    match http.send_status(&initial_report).await {
-        Ok(true) => {
-            acknowledge_summaries(finalized, sent_summaries);
-            if can_auto_update(true, pending, finalized) && samples.is_empty() && check_auto_update(cfg, update_schedule).await {
-                stop_and_drain(sampler_task, samples, aggregator, finalized, latest).await;
-                flush_final_http(http, finalized, latest).await;
-                return Ok(SessionEnd::Updated);
-            }
-        }
-        Ok(false) => queue_snapshot(pending, latest),
-        Err(err) => {
-            warn!(err = %err, "http: initial report failed; keeping summaries for retry");
-            queue_snapshot(pending, latest);
-        }
-    }
-
-    let mut consecutive_failures: u32 = 0;
 
     loop {
         tokio::select! {
@@ -757,54 +727,46 @@ async fn session_http(
                 *latest = record_aggregate(snapshot, at, aggregator, finalized);
                 continue;
             }
-            _ = report_ticker.tick() => {}
-            Some(mut client) = ws_rx.recv() => {
-                let announce = rpc::protocol::build_basic_report(extras, "ws", cfg.report_interval_secs)?;
-                if let Err(err) = client.send(announce).await {
-                    warn!(err = %err, "websocket recovery announce failed");
-                    anyhow::bail!("websocket recovery announce failed: {err:#}");
-                }
-                return Ok(SessionEnd::Recovered(client));
-            }
+            _ = report_ticker.tick() => { if !retry.ready() { continue; } }
+            _ = tokio::time::sleep_until(retry.deadline()), if retry.failures() > 0 => {}
+            Some(client) = ws_rx.recv() => return Ok(SessionEnd::Recovered(client)),
             _ = shutdown::wait() => {
-                info!("shutdown signalled - ending session");
-                flush_http(pending, http).await;
                 stop_and_drain(sampler_task, samples, aggregator, finalized, latest).await;
-                flush_final_http(http, finalized, latest).await;
+                flush_final_http(http, pending, finalized, latest).await;
                 return Ok(SessionEnd::Ended);
             }
             signal = next_signal(signals) => match signal {
                 Signal::Reconfigure(request) => {
-                    flush_http(pending, http).await;
-                    let (report, sent_summaries) = queued_report(latest, finalized);
-                    if matches!(http.send_status(&report).await, Ok(true)) {
-                        acknowledge_summaries(finalized, sent_summaries);
-                    } else {
-                        queue_snapshot(pending, latest);
-                    }
+                    queue_snapshot(pending, latest);
                     return Ok(SessionEnd::Reconfigured(request));
                 }
                 Signal::ReReport => {
-                    last_basic_report = handle_re_report(cfg, extras, http).await?.or(last_basic_report);
+                    last_basic_report = None;
+                    if retry.ready() { report_ticker.reset_immediately(); }
                     continue;
                 }
                 Signal::Exit(receipt) => {
-                    info!("restart command accepted; exiting so the service manager can restart the process");
-                    flush_http(pending, http).await;
+                    info!("restart command accepted; waiting for its receipt before exit");
                     wait_for_delivery(receipt).await;
                     stop_and_drain(sampler_task, samples, aggregator, finalized, latest).await;
-                    flush_final_http(http, finalized, latest).await;
+                    flush_final_http(http, pending, finalized, latest).await;
                     return Ok(SessionEnd::Commanded);
                 }
             },
         }
 
-        if last_basic_report.map_or(true, |at| at.elapsed() >= Duration::from_secs(86_400)) {
-            let basic =
-                rpc::protocol::build_basic_report(extras, "http", cfg.report_interval_secs)?;
+        if last_basic_report.is_none_or(|at: tokio::time::Instant| at.elapsed() >= Duration::from_secs(86_400)) {
+            let basic = rpc::protocol::build_basic_report(extras, "http", cfg.report_interval_secs)?;
             match http.send(&basic).await {
-                Ok(()) => last_basic_report = Some(tokio::time::Instant::now()),
-                Err(err) => warn!(err = %err, "http: basicReport retry failed"),
+                Ok(()) => {
+                    last_basic_report = Some(tokio::time::Instant::now());
+                    info!("basicReport posted over HTTP, agent registered");
+                }
+                Err(error) => {
+                    retry.fail(&error, "HTTP registration");
+                    queue_snapshot(pending, latest);
+                    continue;
+                }
             }
         }
 
@@ -822,47 +784,19 @@ async fn session_http(
                 } else {
                     queue_snapshot(pending, latest);
                 }
-                if consecutive_failures > 0 {
-                    info!(
-                        failures = consecutive_failures,
-                        frames = pending.len(),
-                        "http: link recovered"
-                    );
-                }
-                consecutive_failures = 0;
+                retry.success("HTTP reports");
+                report_ticker.reset();
                 if can_auto_update(report_delivered, pending, finalized) && samples.is_empty() && check_auto_update(cfg, update_schedule).await {
                     stop_and_drain(sampler_task, samples, aggregator, finalized, latest).await;
-                    flush_final_http(http, finalized, latest).await;
+                    flush_final_http(http, pending, finalized, latest).await;
                     return Ok(SessionEnd::Updated);
                 }
             }
-            Err(e) => {
+            Err(error) => {
                 queued.pop();
                 pending.restore_front(queued);
                 queue_snapshot(pending, latest);
-                consecutive_failures += 1;
-                // Logged at a rising interval rather than every tick: a host
-                // that is offline for an hour should not fill the journal with
-                // 720 identical lines.
-                // 按递增间隔而非每个周期记录失败，避免主机离线一小时时日志出现 720 行相同内容。
-                if consecutive_failures == 1 || consecutive_failures % 12 == 0 {
-                    warn!(
-                        err = %e,
-                        failures = consecutive_failures,
-                        queued = pending.len(),
-                        "http: send failed; keeping frames queued"
-                    );
-                }
-                // A sustained failure is worth reporting upward, but not
-                // immediately: the next tick may well succeed, and ending the
-                // session to reconnect would be a step backwards for a
-                // transport whose whole advantage is that it has no connection
-                // to lose.
-                // 持续失败时才向上报告；下一周期可能成功，而且 HTTP 的优势是不依赖持久连接，
-                // 因单次请求失败而结束会话并重连反而倒退。
-                if consecutive_failures >= 60 {
-                    anyhow::bail!("http push has failed {consecutive_failures} times in a row");
-                }
+                retry.fail(&error, "HTTP reports");
             }
         }
     }
@@ -871,6 +805,77 @@ async fn session_http(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn http_session_keeps_pending_frames_until_recovery() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let cfg = Config {
+            endpoint: format!("http://{}", listener.local_addr().unwrap()), token: "fixture".into(),
+            sample_interval_secs: 1, report_interval_secs: 1, report_interval_explicit: true,
+            insecure: false, include_nics: vec![], exclude_nics: vec![], include_mounts: vec![], exclude_mounts: vec![],
+            auto_update: false, log_file: None, service_tier: None, config_path: "unused".into(),
+            runtime_overrides: Default::default(), collect_gpus: false, collect_sensors: false,
+        };
+        let (signals, mut signal_rx) = tokio::sync::mpsc::channel(1);
+        let server = tokio::spawn(async move {
+            let mut failed_at = None;
+            let mut delivered = false;
+            for index in 0..4 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                let (header_end, length) = loop {
+                    let mut buffer = [0; 4096];
+                    let count = stream.read(&mut buffer).await.unwrap();
+                    assert!(count > 0);
+                    bytes.extend_from_slice(&buffer[..count]);
+                    if let Some(end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+                        let header = String::from_utf8_lossy(&bytes[..end]).to_lowercase();
+                        let length: usize = header.lines().find_map(|line| line.strip_prefix("content-length:")).unwrap().trim().parse().unwrap();
+                        break (end + 4, length);
+                    }
+                };
+                while bytes.len() < header_end + length {
+                    let mut buffer = [0; 4096];
+                    let count = stream.read(&mut buffer).await.unwrap();
+                    assert!(count > 0);
+                    bytes.extend_from_slice(&buffer[..count]);
+                }
+                let value: serde_json::Value = serde_json::from_slice(&bytes[header_end..header_end + length]).unwrap();
+                let frames = value.as_array().cloned().unwrap_or_else(|| vec![value]);
+                if index == 1 {
+                    failed_at = Some(tokio::time::Instant::now());
+                    stream.write_all(b"HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+                    continue;
+                }
+                if index == 2 {
+                    assert!(failed_at.unwrap().elapsed() >= Duration::from_secs(4));
+                    assert!(frames.iter().any(|frame| frame["params"]["sequence"] == 42));
+                    delivered = true;
+                }
+                let acks: Vec<_> = frames.iter().map(|frame| serde_json::json!({"id":frame["id"],"ack":true,"ignored":false})).collect();
+                let body = serde_json::json!({"ok":true,"applied":acks.len(),"acks":acks}).to_string();
+                stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+                if index == 2 {
+                    let (sent, received) = tokio::sync::oneshot::channel();
+                    sent.send(()).unwrap();
+                    signals.send(Signal::Exit(received)).await.unwrap();
+                }
+            }
+            assert!(delivered);
+        });
+        let mut pending = FrameQueue::default();
+        pending.push(rpc::RpcRequest::notification("report", serde_json::json!({"sequence":42})));
+        let mut sampling = SamplingState::new(&cfg);
+        let mut schedule = UpdateSchedule { enabled: false, last_attempt: None };
+        let transport = HttpTransport::new(&cfg).unwrap();
+        let extras = sysstat::AgentExtras::fallback();
+        let result = tokio::time::timeout(Duration::from_secs(12), session_http(&cfg, &extras, &transport,
+            &mut pending, &mut sampling, &mut schedule, &mut signal_rx)).await.unwrap().unwrap();
+        assert!(matches!(result, SessionEnd::Commanded));
+        assert!(pending.is_empty());
+        server.await.unwrap();
+    }
 
     fn summary(bucket_ts: i64) -> sysstat::FinalizedAggregate {
         sysstat::FinalizedAggregate {
@@ -1052,7 +1057,7 @@ mod tests {
         for sequence in 1..=2 { pending.push(rpc::RpcRequest::notification("report", serde_json::json!({"sequence":sequence}))); }
         let mut schedule = UpdateSchedule { enabled: false, last_attempt: None };
         let (_sender, mut signals) = tokio::sync::mpsc::channel(1);
-        let _ = session_ws(&cfg, &sysstat::AgentExtras::fallback(), &mut pending, &mut SamplingState::new(&cfg), None, &mut schedule, &mut signals).await;
+        let _ = session_ws(&cfg, &sysstat::AgentExtras::fallback(), &mut pending, &mut SamplingState::new(&cfg), None, &mut schedule, &mut signals, &mut Retry::new(RESTART_PAUSE, Duration::from_secs(60))).await;
         let queued = pending.take();
         assert_eq!(queued.len(), 1);
         assert_eq!(queued[0].params["sequence"], 1);
@@ -1137,6 +1142,7 @@ mod tests {
             None,
             &mut update_schedule,
             &mut signals,
+            &mut Retry::new(RESTART_PAUSE, Duration::from_secs(60)),
         )
         .await;
 
