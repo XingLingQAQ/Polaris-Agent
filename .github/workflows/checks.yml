@@ -24,3 +24,12 @@ jobs:
           node-version: 24
       - run: cargo build --locked
       - run: npm test
+      - name: OpenRC supervision
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm --init -v "$PWD:/src:ro" -w /src alpine:3.24 sh -ec '
+            apk add --no-cache openrc
+            mkdir -p /run/openrc
+            touch /run/openrc/softlevel
+            sh tests/openrc-supervision.test.sh
+          '

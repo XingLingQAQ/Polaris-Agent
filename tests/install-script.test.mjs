@@ -59,18 +59,24 @@ try {
   writeFileSync(openrcPath, `set -eu
 SERVICE_MARKER='# fixture service'
 AGENT_NAME=polaris-agent
+SERVICE_NAME=polaris-agent
+LOG_PATH=/var/log/polaris-agent.log
 DEST=/usr/local/lib/polaris-agent/polaris-agent
 CFG=/etc/polaris-agent/config.json
 eval "$(cat <<UNIT
 ${openrcUnit}
 UNIT
 )"
-printf '%s\\0' "$command" "$command_args" "$pidfile" "$retry"
+printf '%s\\0' "$command" "$command_args" "$pidfile" "$retry" "$supervisor" "$respawn_max" "$respawn_delay" "\${command_background:-false}"
 `);
-  const [command, commandArgs, pidfile, retry] = run('sh', [openrcPath]).stdout.split('\0');
+  const [command, commandArgs, pidfile, retry, supervisor, respawnMax, respawnDelay, background] = run('sh', [openrcPath]).stdout.split('\0');
   assert.equal(command, '/usr/local/lib/polaris-agent/polaris-agent');
   assert.equal(commandArgs, 'run --config /etc/polaris-agent/config.json');
   assert.equal(pidfile, '/run/polaris-agent.pid');
+  assert.equal(supervisor, 'supervise-daemon');
+  assert.equal(respawnMax, '0', 'repeated exits must not exhaust supervisor retries');
+  assert.equal(respawnDelay, '5');
+  assert.equal(background, 'false', 'the supervisor must own the foreground Agent');
   const [stopSignal, graceSeconds, finalSignal, finalSeconds] = retry.split('/');
   assert.equal(stopSignal, 'TERM');
   assert.ok(Number(graceSeconds) > 20 + 5, 'allow an in-flight HTTP request and final report to finish');

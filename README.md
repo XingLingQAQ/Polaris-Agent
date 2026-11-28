@@ -194,6 +194,16 @@ pa rollback
 
 Update downloads use fixed GitHub HTTPS addresses, regardless of whether `endpoint` uses HTTP or HTTPS. `pa rollback` restores the previous binary kept on the machine; it does not revert server data or configuration. Docker installations update by rebuilding and replacing the container.
 
+OpenRC installations require `supervise-daemon` to restart after a console update or restart command. If an existing service reports `crashed` after updating, rerun the current installer as root with the original mode, service name and install directory. For a default system installation:
+
+```sh
+curl -fsSL 'https://raw.githubusercontent.com/XingLingQAQ/Polaris-Agent/main/install.sh' -o /tmp/polaris-install.sh
+sh /tmp/polaris-install.sh --mode system
+pa status
+```
+
+Reinstallation preserves the existing endpoint, token and local settings; merging an existing configuration requires Python 3. It refreshes the OpenRC service to supervise the foreground Agent and retry exits every five seconds without a retry limit. Updating the binary alone does not update the service script.
+
 ### Uninstall
 
 The Agent can remove itself. `pa uninstall` unregisters the terminal command, stops and deletes the service, and removes the binary and configuration:

@@ -363,6 +363,9 @@ if [ -e "$TX_DIR" ] || [ -L "$TX_DIR" ]; then recover_transaction; fi
 [ -z "$TOKEN" ] && [ ! -f "$CFG" ] && die "an Agent token is required"
 [ "$MODE" = "auto" ] || [ "$MODE" = "system" ] || [ "$MODE" = "user" ] || [ "$MODE" = "manual" ] || [ "$MODE" = "docker" ] || die "mode must be system, user, manual, or docker"
 [ "$MODE" != docker ] || [ "$AUTO_UPDATE" != 1 ] || die "automatic updates are disabled in Docker; rebuild and replace the image"
+if [ "$HAVE_SYSTEMD" = 0 ] && [ "$HAVE_OPENRC" = 1 ] && [ "$IS_ROOT" = 1 ] && { [ "$MODE" = auto ] || [ "$MODE" = system ]; }; then
+  command -v supervise-daemon >/dev/null 2>&1 || die "OpenRC requires supervise-daemon; install it before running the installer"
+fi
 EFFECTIVE_SAMPLE="${SAMPLE_INTERVAL:-5}"
 EFFECTIVE_REPORT="${REPORT_INTERVAL:-60}"
 case "$EFFECTIVE_SAMPLE:$EFFECTIVE_REPORT" in *[!0-9:]*|:*|*:) die "intervals must be positive integers" ;; esac
@@ -850,32 +853,33 @@ UNIT
 
 elif [ "$HAVE_OPENRC" = 1 ] && [ "$IS_ROOT" = 1 ]; then
   SERVICE_MANAGER="openrc"
-  LOG_PATH="/var/log/$AGENT_NAME.log"
+  LOG_PATH="/var/log/$SERVICE_NAME.log"
   [ ! -e "/etc/init.d/$SERVICE_NAME" ] || grep -Fxq "$SERVICE_MARKER" "/etc/init.d/$SERVICE_NAME" || die "refusing to overwrite existing service"
+  if [ -e "/etc/init.d/$SERVICE_NAME" ]; then
+    rc-service "$SERVICE_NAME" stop || die "cannot stop the existing OpenRC service $SERVICE_NAME"
+  fi
   cat > "/etc/init.d/$SERVICE_NAME" <<UNIT
 #!/sbin/openrc-run
 $SERVICE_MARKER
 name="$AGENT_NAME"
 command="$DEST"
 command_args="run --config "$CFG""
-command_background=true
-pidfile="/run/$AGENT_NAME.pid"
+supervisor="supervise-daemon"
+pidfile="/run/$SERVICE_NAME.pid"
 retry="TERM/30/KILL/5"
 respawn_delay=5
-output_log="/var/log/$AGENT_NAME.log"
-error_log="/var/log/$AGENT_NAME.log"
+respawn_max=0
+output_log="$LOG_PATH"
+error_log="$LOG_PATH"
 depend() { need net; after firewall; }
 UNIT
   chmod 755 "/etc/init.d/$SERVICE_NAME"
   rc-update add "$SERVICE_NAME" default >/dev/null 2>&1 || die "cannot enable OpenRC service $SERVICE_NAME"
   set_service_tier "A"
-  if rc-service "$SERVICE_NAME" status >/dev/null 2>&1; then
-    rc-service "$SERVICE_NAME" restart || die "cannot restart OpenRC service $SERVICE_NAME"
-  else
-    rc-service "$SERVICE_NAME" start || die "cannot start OpenRC service $SERVICE_NAME"
-  fi
+  rc-service "$SERVICE_NAME" start || die "cannot start OpenRC service $SERVICE_NAME"
+  rc-service "$SERVICE_NAME" status >/dev/null 2>&1 || die "OpenRC service $SERVICE_NAME did not stay active; check $LOG_PATH"
   TIER="A"
-  NOTE="openrc service is running and will start on boot"
+  NOTE="OpenRC supervises the Agent, restarts it after exit, and starts it on boot"
 
 elif [ "$HAVE_SUPERVISORD" = 1 ] && [ "$IS_ROOT" = 1 ]; then
   SERVICE_MANAGER="supervisord"

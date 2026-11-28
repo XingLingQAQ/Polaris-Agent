@@ -194,6 +194,16 @@ pa rollback
 
 更新下载使用固定的 GitHub HTTPS 地址，与 `endpoint` 使用 HTTP 还是 HTTPS 无关。`pa rollback` 使用本机保留的上一份二进制，不回滚服务端数据或配置。Docker 安装通过重建并替换容器更新。
 
+OpenRC 安装需要 `supervise-daemon`，才能在控制台更新或重启后重新启动探针。已有服务若在更新后显示 `crashed`，请以 root 身份重新运行当前安装器，保持原来的模式、服务名和安装目录。默认系统安装可执行：
+
+```sh
+curl -fsSL 'https://raw.githubusercontent.com/XingLingQAQ/Polaris-Agent/main/install.sh' -o /tmp/polaris-install.sh
+sh /tmp/polaris-install.sh --mode system
+pa status
+```
+
+重装会保留现有端点、Token 和本地设置；合并已有配置需要 Python 3。安装器会更新 OpenRC 服务，让它守护前台探针进程，退出后每隔 5 秒重新启动，不限制次数。仅更新二进制不会更新服务脚本。
+
 ### 卸载
 
 可以直接用程序卸载自己，它会注销命令、停止并删除服务、程序文件和配置：
