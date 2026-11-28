@@ -159,27 +159,99 @@ pub(super) fn physical_address() -> Option<IpAddr> {
     None
 }
 
+// macOS Ethernet/Wi-Fi BSD devices use en<N>; do not select tunnels,
+// bridges, loopback or peer-to-peer interfaces as the direct-client source.
 #[cfg(target_os = "macos")]
-pub(super) fn physical_address() -> Option<IpAddr> {
-    let output = std::process::Command::new("/sbin/route")
-        .args(["-n", "get", "default"])
-        .output()
-        .ok()?;
-    let text = String::from_utf8(output.stdout).ok()?;
-    let interface = text
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("interface:").map(str::trim))?;
-    if virtual_interface(interface) {
-        return None;
-    }
-    let address = std::process::Command::new("/usr/sbin/ipconfig")
+fn macos_physical_interface(name: &str) -> bool {
+    !virtual_interface(name)
+        && name
+            .strip_prefix("en")
+            .is_some_and(|index| !index.is_empty() && index.bytes().all(|c| c.is_ascii_digit()))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_scoped_interfaces(routes: &str) -> impl Iterator<Item = &str> {
+    routes.lines().filter_map(|line| {
+        let mut fields = line.split_whitespace();
+        let (destination, gateway, flags, interface) = (
+            fields.next()?,
+            fields.next()?,
+            fields.next()?,
+            fields.next()?,
+        );
+        if destination != "default"
+            || !['U', 'G', 'I'].iter().all(|flag| flags.contains(*flag))
+            || flags.contains('R')
+            || flags.contains('B')
+            || !macos_physical_interface(interface)
+        {
+            return None;
+        }
+        let gateway: std::net::Ipv4Addr = gateway.parse().ok()?;
+        (!gateway.is_unspecified()
+            && !gateway.is_loopback()
+            && !gateway.is_multicast()
+            && !gateway.is_broadcast())
+        .then_some(interface)
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn macos_interface_address(interface: &str) -> Option<IpAddr> {
+    let output = std::process::Command::new("/usr/sbin/ipconfig")
         .args(["getifaddr", interface])
         .output()
         .ok()?;
-    if !address.status.success() {
+    if !output.status.success() {
         return None;
     }
-    String::from_utf8(address.stdout).ok()?.trim().parse().ok()
+    String::from_utf8(output.stdout).ok()?.trim().parse().ok()
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn physical_address() -> Option<IpAddr> {
+    // Keep the ordinary default-route fast path. A TUN default must not stop
+    // discovery: macOS retains the physical gateway in interface-scoped routes.
+    let default = std::process::Command::new("/sbin/route")
+        .args(["-n", "get", "default"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok());
+    macos_select_address(
+        default.as_deref(),
+        || {
+            let output = std::process::Command::new("/usr/sbin/netstat")
+                .args(["-rn", "-f", "inet"])
+                .output()
+                .ok()?;
+            output.status.success().then_some(())?;
+            String::from_utf8(output.stdout).ok()
+        },
+        macos_interface_address,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn macos_select_address(
+    default: Option<&str>,
+    scoped_routes: impl FnOnce() -> Option<String>,
+    mut address: impl FnMut(&str) -> Option<IpAddr>,
+) -> Option<IpAddr> {
+    if let Some(interface) = default
+        .and_then(|text| {
+            text.lines()
+                .find_map(|line| line.trim().strip_prefix("interface:").map(str::trim))
+        })
+        .filter(|interface| macos_physical_interface(interface))
+    {
+        if let Some(address) = address(interface) {
+            return Some(address);
+        }
+    }
+    let routes = scoped_routes()?;
+    let selected = macos_scoped_interfaces(&routes).find_map(&mut address);
+    selected
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
@@ -190,6 +262,133 @@ pub(super) fn physical_address() -> Option<IpAddr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_ordinary_default_preserves_priority_without_loading_scoped_routes() {
+        let expected = "192.0.2.10".parse::<IpAddr>().unwrap();
+        assert_eq!(
+            macos_select_address(
+                Some("  interface: en12\n"),
+                || panic!("ordinary default must not inspect scoped routes"),
+                |interface| {
+                    assert_eq!(interface, "en12");
+                    Some(expected)
+                }
+            ),
+            Some(expected)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_skips_missing_interface_addresses_and_returns_none_without_candidates() {
+        let expected = "198.51.100.3".parse::<IpAddr>().unwrap();
+        let mut tried = Vec::new();
+        let selected = macos_select_address(
+            Some("interface: utun6"),
+            || Some("default 192.0.2.1 UGScIg en7\ndefault 198.51.100.1 UGScIg en2\n".into()),
+            |interface| {
+                tried.push(interface.to_owned());
+                (interface == "en2").then_some(expected)
+            },
+        );
+        assert_eq!(selected, Some(expected));
+        assert_eq!(tried, vec!["en7", "en2"]);
+        assert_eq!(
+            macos_select_address(
+                Some("interface: utun6"),
+                || Some(String::new()),
+                |_| panic!("no physical route")
+            ),
+            None
+        );
+        assert_eq!(
+            macos_select_address(None, || None, |_| panic!("no route output")),
+            None
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_failed_default_address_continues_to_scoped_routes() {
+        let expected = "198.51.100.3".parse::<IpAddr>().unwrap();
+        assert_eq!(
+            macos_select_address(
+                Some("interface: en9"),
+                || Some("default 198.51.100.1 UGScIg en2\n".into()),
+                |interface| (interface == "en2").then_some(expected)
+            ),
+            Some(expected)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_accepts_numbered_ethernet_and_wifi_not_virtual_devices() {
+        for name in ["en0", "en1", "en7", "en12"] {
+            assert!(macos_physical_interface(name), "{name}");
+        }
+        for name in [
+            "utun6",
+            "tun0",
+            "wg0",
+            "bridge0",
+            "bridge100",
+            "lo0",
+            "awdl0",
+            "llw0",
+            "vmenet0",
+            "en",
+            "en1junk",
+            "en-1",
+            "",
+        ] {
+            assert!(!macos_physical_interface(name), "{name}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_tun_default_uses_physical_scoped_default_without_hardcoding_en0() {
+        let routes = "Destination Gateway Flags Netif Expire\n\
+            default link#32 UCSg utun6\n\
+            default link#25 UCSIg utun5\n\
+            default link#27 UCSIg bridge100 !\n\
+            default 203.0.113.1 UGScIg en7\n\
+            default 192.0.2.1 UGScIg en1\n";
+        assert_eq!(
+            macos_scoped_interfaces(routes).collect::<Vec<_>>(),
+            vec!["en7", "en1"]
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_accepts_link_local_gateway_for_scoped_physical_default() {
+        let routes = "default 169.254.1.1 UGScIg en0\n";
+        assert_eq!(macos_scoped_interfaces(routes).next(), Some("en0"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_rejects_invalid_and_non_scoped_default_routes() {
+        let routes = "default\n\
+            default link#7 UGScIg en0\n\
+            default 0.0.0.0 UGScIg en0\n\
+            default 127.0.0.1 UGScIg en0\n\
+            default 224.0.0.1 UGScIg en0\n\
+            default 255.255.255.255 UGScIg en0\n\
+            default 192.0.2.1 GScIg en0\n\
+            default 192.0.2.1 UScIg en0\n\
+            default 192.0.2.1 UGScg en0\n\
+            default 192.0.2.1 UGScIR en0\n\
+            default 192.0.2.1 UGScIB en0\n\
+            192.0.2/24 192.0.2.1 UGScI en0\n\
+            default 192.0.2.1 UGScI awdl0\n";
+        assert!(macos_scoped_interfaces(routes).next().is_none());
+        assert!(macos_scoped_interfaces("").next().is_none());
+    }
 
     #[test]
     fn rejects_local_and_fake_public_addresses() {
