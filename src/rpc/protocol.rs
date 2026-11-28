@@ -84,6 +84,9 @@ pub fn build_report(
     if let Some(sensors) = &s.sensors {
         params["sensors"] = json!(sensors);
     }
+    if let Some(containers) = &s.containers {
+        params["containers"] = json!(containers);
+    }
     RpcRequest::notification("report", params)
 }
 

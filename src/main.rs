@@ -264,7 +264,8 @@ fn start_sample_task(mut capture: impl FnMut() -> (sysstat::SysSnapshot, i64) + 
 
 impl SamplingState {
     fn new(cfg: &Config) -> Self {
-        let hardware = sysstat::hardware::HardwareTelemetry::start(cfg.collect_gpus, cfg.collect_sensors);
+        let hardware = sysstat::hardware::HardwareTelemetry::start(cfg.collect_gpus, cfg.collect_sensors)
+            .with_containers(cfg.collect_containers, cfg.container_socket.as_deref());
         let mut sampler = sysstat::Sampler::with_config(cfg.sample_interval_secs, cfg);
         let mut aggregator = sysstat::MinuteAggregator::default();
         let mut finalized = VecDeque::new();
@@ -1046,7 +1047,7 @@ mod tests {
             include_mounts: vec![], exclude_mounts: vec![], auto_update: false,
             log_file: None, service_tier: None, config_path: std::path::PathBuf::from("unused"),
             runtime_overrides: Default::default(),
-            collect_gpus: false, collect_sensors: false,
+            collect_gpus: false, collect_sensors: false, collect_containers: false, container_socket: None,
         };
         let mut pending = FrameQueue::default();
         for sequence in 1..=2 { pending.push(rpc::RpcRequest::notification("report", serde_json::json!({"sequence":sequence}))); }
@@ -1107,7 +1108,7 @@ mod tests {
 
             config_path: std::path::PathBuf::from("unused"),
             runtime_overrides: Default::default(),
-            collect_gpus: false, collect_sensors: false,
+            collect_gpus: false, collect_sensors: false, collect_containers: false, container_socket: None,
         };
         let frames: Vec<_> = (1..=3)
             .map(|sequence| {

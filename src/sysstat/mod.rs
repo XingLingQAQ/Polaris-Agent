@@ -265,6 +265,7 @@ impl Sampler {
             mounts,
             gpus: None,
             sensors: None,
+            containers: None,
         }
     }
 }

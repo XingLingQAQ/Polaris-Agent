@@ -540,7 +540,7 @@ import json, os, sys
 with open(sys.argv[1], encoding="utf-8") as f: saved = json.load(f)
 with open(sys.argv[2], encoding="utf-8") as f: update = json.load(f)
 if not isinstance(saved, dict): raise ValueError("config must be an object")
-allowed = {"endpoint", "token", "sample_interval", "report_interval", "include_nics", "exclude_nics", "include_mounts", "exclude_mounts", "insecure", "auto_update", "collect_gpus", "collect_sensors", "log_file", "runtime_revision", "service_tier"}
+allowed = {"endpoint", "token", "sample_interval", "report_interval", "include_nics", "exclude_nics", "include_mounts", "exclude_mounts", "insecure", "auto_update", "collect_gpus", "collect_sensors", "collect_containers", "container_socket", "log_file", "runtime_revision", "service_tier"}
 if (saved.keys() | update.keys()) - allowed: raise ValueError("configuration contains unsupported fields")
 if sys.argv[4] != "1": update["endpoint"] = saved.get("endpoint", update["endpoint"])
 if sys.argv[5] != "1" and "token" in update: update["token"] = saved.get("token", update["token"])
@@ -553,8 +553,10 @@ if not isinstance(saved.get("endpoint"), str) or not saved["endpoint"] or not (i
     raise ValueError("endpoint and Agent token must be nonempty strings")
 auto_update = saved.get("auto_update", False)
 if not isinstance(auto_update, bool): raise ValueError("auto_update must be a boolean")
-for key in ("collect_gpus", "collect_sensors"):
+for key in ("collect_gpus", "collect_sensors", "collect_containers"):
     if saved.get(key) is not None and not isinstance(saved[key], bool): raise ValueError(f"{key} must be a boolean or null")
+socket = saved.get("container_socket")
+if socket is not None and (not isinstance(socket, str) or len(socket.encode("utf-8")) > 4096 or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in socket)): raise ValueError("container_socket must be a string without control characters")
 with open(sys.argv[3], "w", encoding="utf-8") as f:
     json.dump(saved, f, indent=2); f.write("\n"); f.flush(); os.fsync(f.fileno())
 print("1" if auto_update else "0")

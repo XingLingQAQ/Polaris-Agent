@@ -251,6 +251,7 @@ mod tests {
         let reader = HardwareReader {
             gpus: None,
             sensors: Some(rx),
+            containers: None,
         };
         let mut snapshot = crate::sysstat::SysSnapshot::default();
         reader.apply(&mut snapshot);

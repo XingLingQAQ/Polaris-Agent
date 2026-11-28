@@ -29,6 +29,7 @@ use crate::config::Config;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_POST_WORK: usize = 40;
+const MAX_POST_BYTES: usize = 2 * 1024 * 1024;
 
 /// Posts frames to the HTTP endpoint.
 /// 将帧发送到 HTTP 端点。
@@ -139,17 +140,22 @@ fn batch_ranges(reqs: &[RpcRequest]) -> Result<Vec<std::ops::Range<usize>>> {
     let mut ranges = Vec::new();
     let mut start = 0;
     let mut work = 0;
+    let mut bytes = 2;
     for (index, req) in reqs.iter().enumerate() {
         let cost = frame_work(req);
+        let size = serde_json::to_vec(req)?.len();
+        anyhow::ensure!(size + 2 <= MAX_POST_BYTES, "one frame exceeds the HTTP push body limit");
         if cost > MAX_POST_WORK {
             anyhow::bail!("one frame exceeds the HTTP push work budget");
         }
-        if index > start && work + cost > MAX_POST_WORK {
+        if index > start && (work + cost > MAX_POST_WORK || bytes + 1 + size > MAX_POST_BYTES) {
             ranges.push(start..index);
             start = index;
             work = 0;
+            bytes = 2;
         }
         work += cost;
+        bytes += size + usize::from(index > start);
     }
     if start < reqs.len() {
         ranges.push(start..reqs.len());
@@ -236,5 +242,15 @@ mod tests {
     fn basic_reports_share_chunks_but_frame_count_remains_bounded() {
         let frames: Vec<_> = (0..20).map(|_| frame("basicReport", 0)).collect();
         assert_eq!(batch_ranges(&frames).unwrap(), vec![0..20]);
+    }
+
+    #[test]
+    fn container_backlog_batches_respect_the_server_body_limit() {
+        let containers: Vec<_> = (0..256).map(|index| json!({"id":index.to_string(),"name":"容".repeat(128),"image":"像".repeat(256),"runtime":"docker","state":"running"})).collect();
+        let frames: Vec<_> = (0..20).map(|_| RpcRequest::notification("report",json!({"containers":containers}))).collect();
+        let ranges=batch_ranges(&frames).unwrap();
+        assert!(ranges.len()>1);
+        assert_eq!(ranges.iter().map(|range|range.len()).sum::<usize>(),20);
+        for range in ranges { assert!(serde_json::to_vec(&frames[range]).unwrap().len()<=MAX_POST_BYTES); }
     }
 }

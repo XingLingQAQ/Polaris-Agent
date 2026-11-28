@@ -129,6 +129,8 @@ Precedence is **CLI flags, then `POLARIS_AGENT_*` environment variables, then th
 | `auto_update` | Off by default; needs a supervised installation | `--auto-update=true` / `POLARIS_AGENT_AUTO_UPDATE` |
 | `collect_gpus` | On by default; detect NVIDIA GPUs | `--collect-gpus=false` / `POLARIS_AGENT_COLLECT_GPUS` |
 | `collect_sensors` | On by default; detect Linux hardware temperatures | `--collect-sensors=false` / `POLARIS_AGENT_COLLECT_SENSORS` |
+| `collect_containers` | Off by default; opt into read-only Docker/Podman telemetry | `--collect-containers=true` / `POLARIS_AGENT_COLLECT_CONTAINERS` |
+| `container_socket` | Optional Unix socket path or HTTP(S) proxy origin; empty means automatic discovery | `--container-socket` / `POLARIS_AGENT_CONTAINER_SOCKET` |
 | `insecure` | Off by default; skips certificate checks for reporting and control connections, not for probe targets | `--insecure=true` / `POLARIS_AGENT_INSECURE` |
 | `log_file` | Optional log file path | `--log-file` |
 
@@ -147,6 +149,25 @@ On Linux, the Agent reads up to 64 temperature sensors from `/sys/class/hwmon`, 
 Hardware is discovered at startup and sampled independently every 10 seconds. Missing sources leave no hardware fields or empty cards. NVIDIA queries have a 3-second timeout; failures retry after 60 seconds without delaying ordinary reports. Previously collected readings are cleared on failure or when older than 30 seconds. After adding hardware or installing a driver, restart with `pa restart` to discover it.
 
 To disable either collector, add `"collect_gpus": false` or `"collect_sensors": false` to the installation's JSON configuration and restart. These are local settings; remote configuration preserves them. A server with GPU/temperature telemetry support displays these readings only in the administrator's Agent details; public machine endpoints omit them.
+
+### Docker and Podman containers
+
+Container collection is **off by default**. Enable it in the installation's configuration, then restart:
+
+```json
+{
+  "collect_containers": true,
+  "container_socket": "http://127.0.0.1:2375"
+}
+```
+
+Add these fields to the existing configuration; keep the endpoint and token. Alternatively, set `POLARIS_AGENT_COLLECT_CONTAINERS=true` and `POLARIS_AGENT_CONTAINER_SOCKET`, or pass `--collect-containers=true --container-socket=http://127.0.0.1:2375`. The HTTP address must be a controlled read-only proxy, such as `docker-socket-proxy`. Allow only GET requests for the container list and stats, with network access restricted to the Agent. Redirects and environment HTTP proxies are not used.
+
+Access to the complete Docker socket grants extensive host privileges, even if mounted read-only. Prefer a restricted proxy or rootless Podman; do not expose the full socket to untrusted environments. The Agent only sends GET requests and provides no container control commands.
+
+For Unix sockets, use an absolute path such as `/var/run/docker.sock` or the expanded `$XDG_RUNTIME_DIR/podman/podman.sock` path. When `container_socket` is empty, Unix systems try `/var/run/docker.sock`, `$XDG_RUNTIME_DIR/docker.sock`, `$XDG_RUNTIME_DIR/podman/podman.sock`, then `/run/podman/podman.sock`. Windows requires an explicit HTTP(S) proxy origin. Container settings are local and preserved by remote updates and reinstalls.
+
+The Agent lists up to 256 containers every 15 seconds, with at most four simultaneous stats requests and a 5-second total budget. Slow or unavailable stats leave CPU/memory unknown while retaining the container's basic state. A failed list retries after 60 seconds; readings older than 45 seconds clear on the next ordinary report. Before any successful reading, no container field is sent. Restart count and uptime are included only when the engine's list supplies those values; container creation time is not used as uptime. Names, images and metrics are visible only in administrator details on a compatible Uptime Polaris server.
 
 ### Remote configuration and commands
 

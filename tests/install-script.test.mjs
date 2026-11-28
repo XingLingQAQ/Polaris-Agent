@@ -65,7 +65,7 @@ try {
   writeFileSync(mergePath, merge);
   const python = spawnSync('python3', ['--version'], { windowsHide: true }).status === 0 ? 'python3' : 'python';
   const args = [mergePath, saved, update, merged, '0', '0', '5', '60'];
-  writeFileSync(saved, JSON.stringify({ endpoint: 'https://saved.test', token: 'saved-token', sample_interval: 10, report_interval: 90, include_nics: ['eth0'], insecure: true, auto_update: true, collect_gpus: false, collect_sensors: true }));
+  writeFileSync(saved, JSON.stringify({ endpoint: 'https://saved.test', token: 'saved-token', sample_interval: 10, report_interval: 90, include_nics: ['eth0'], insecure: true, auto_update: true, collect_gpus: false, collect_sensors: true, collect_containers: true, container_socket: 'http://127.0.0.1:2375' }));
   writeFileSync(update, JSON.stringify({ endpoint: 'https://new.test', token: 'new-token' }));
   assert.equal(run(python, args).stdout.trim(), '1');
   const config = JSON.parse(readFileSync(merged, 'utf8'));
@@ -75,9 +75,11 @@ try {
   assert.equal(config.insecure, true);
   assert.equal(config.collect_gpus, false);
   assert.equal(config.collect_sensors, true);
+  assert.equal(config.collect_containers, true);
+  assert.equal(config.container_socket, 'http://127.0.0.1:2375');
   writeFileSync(update, JSON.stringify({ endpoint: 'https://new.test', token: 'new-token', auto_update: false }));
   assert.equal(run(python, args).stdout.trim(), '0');
-  for (const bad of [{ ...config, interval: 30 }, { ...config, custom: true }, { ...config, sample_interval: 181, report_interval: 180 }, { ...config, collect_gpus: 'false' }, { ...config, collect_sensors: 0 }]) {
+  for (const bad of [{ ...config, interval: 30 }, { ...config, custom: true }, { ...config, sample_interval: 181, report_interval: 180 }, { ...config, collect_gpus: 'false' }, { ...config, collect_sensors: 0 }, { ...config, collect_containers: 'false' }, { ...config, container_socket: 5 }, { ...config, container_socket: '/tmp/bad\n' }]) {
     writeFileSync(saved, JSON.stringify(bad));
     assert.notEqual(spawnSync(python, args, { windowsHide: true }).status, 0);
   }

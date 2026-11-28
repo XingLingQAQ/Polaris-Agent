@@ -310,7 +310,7 @@ mod tests {
             include_nics: vec![], exclude_nics: vec![], include_mounts: vec![], exclude_mounts: vec![],
             auto_update: false, log_file: None, service_tier: None,
             config_path: path, runtime_overrides: Default::default(),
-            collect_gpus: false, collect_sensors: false,
+            collect_gpus: false, collect_sensors: false, collect_containers: false, container_socket: None,
         }
     }
 
@@ -322,7 +322,9 @@ mod tests {
         let mut cfg = fixture_config(path);
         cfg.collect_gpus = false;
         cfg.collect_sensors = true;
-        std::fs::write(&cfg.config_path, br#"{"endpoint":"https://example.test","token":"fixture","collect_gpus":false,"collect_sensors":true}"#).unwrap();
+        cfg.collect_containers = true;
+        cfg.container_socket = Some("http://127.0.0.1:2375".into());
+        std::fs::write(&cfg.config_path, br#"{"endpoint":"https://example.test","token":"fixture","collect_gpus":false,"collect_sensors":true,"collect_containers":true,"container_socket":"http://127.0.0.1:2375"}"#).unwrap();
         let mut desired = RuntimeConfig::current(&cfg);
         desired.sample_interval_secs = 10;
         let (next, document) = desired.prepare(&cfg, "0123456789abcdef0123456789abcdef").unwrap();
@@ -330,6 +332,10 @@ mod tests {
         let document: Value = serde_json::from_slice(&document).unwrap();
         assert_eq!(document["collect_gpus"], false);
         assert_eq!(document["collect_sensors"], true);
+        assert!(next.collect_containers);
+        assert_eq!(next.container_socket, cfg.container_socket);
+        assert_eq!(document["collect_containers"], true);
+        assert_eq!(document["container_socket"], "http://127.0.0.1:2375");
         assert_eq!(serde_json::to_value(desired).unwrap().as_object().unwrap().len(), 7);
         std::fs::remove_file(&cfg.config_path).unwrap();
     }

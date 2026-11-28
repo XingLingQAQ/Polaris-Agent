@@ -75,6 +75,10 @@ pub struct CliArgs {
     pub collect_gpus: Option<bool>,
     #[arg(long, env = "POLARIS_AGENT_COLLECT_SENSORS", num_args = 0..=1, default_missing_value = "true", require_equals = true, global = true, help = "Collect Linux hwmon temperatures when available")]
     pub collect_sensors: Option<bool>,
+    #[arg(long, env = "POLARIS_AGENT_COLLECT_CONTAINERS", num_args = 0..=1, default_missing_value = "true", require_equals = true, global = true, help = "Enable read-only container telemetry (off by default)")]
+    pub collect_containers: Option<bool>,
+    #[arg(long, env = "POLARIS_AGENT_CONTAINER_SOCKET", global = true, help = "Container Unix socket path or read-only HTTP proxy origin")]
+    pub container_socket: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -93,6 +97,8 @@ struct FileConfig {
     auto_update: Option<bool>,
     collect_gpus: Option<bool>,
     collect_sensors: Option<bool>,
+    collect_containers: Option<bool>,
+    container_socket: Option<String>,
     log_file: Option<PathBuf>,
     #[serde(rename = "runtime_revision")]
     _runtime_revision: Option<String>,
@@ -130,6 +136,8 @@ pub struct Config {
     pub log_file: Option<PathBuf>,
     pub collect_gpus: bool,
     pub collect_sensors: bool,
+    pub collect_containers: bool,
+    pub container_socket: Option<String>,
     pub service_tier: Option<String>,
     pub config_path: PathBuf,
     pub runtime_overrides: RuntimeOverrides,
@@ -141,8 +149,11 @@ fn resolve_auto_update(cli_or_env: Option<bool>, file: Option<bool>) -> bool {
 
 impl Config {
     pub(crate) fn validate_document(value: &serde_json::Value) -> Result<()> {
-        let _: FileConfig = serde_json::from_value(value.clone())
+        let config: FileConfig = serde_json::from_value(value.clone())
             .context("configuration contains unsupported fields or values")?;
+        if let Some(socket) = config.container_socket.filter(|value| !value.is_empty()) {
+            crate::sysstat::hardware::containers::validate_socket(&socket)?;
+        }
         Ok(())
     }
 
@@ -227,6 +238,10 @@ impl Config {
         );
 
         validate_intervals(sample_interval_secs, report_interval_secs)?;
+        let container_socket = args.container_socket.or(file_cfg.container_socket).filter(|value| !value.is_empty());
+        if let Some(socket) = &container_socket {
+            crate::sysstat::hardware::containers::validate_socket(socket)?;
+        }
 
         Ok(Self {
             endpoint,
@@ -242,6 +257,8 @@ impl Config {
             auto_update,
             collect_gpus: args.collect_gpus.or(file_cfg.collect_gpus).unwrap_or(true),
             collect_sensors: args.collect_sensors.or(file_cfg.collect_sensors).unwrap_or(true),
+            collect_containers: args.collect_containers.or(file_cfg.collect_containers).unwrap_or(false),
+            container_socket,
             log_file: args.log_file.or(file_cfg.log_file),
             service_tier: file_cfg.service_tier,
             config_path,
@@ -425,18 +442,53 @@ mod tests {
         std::fs::write(&path, br#"{"endpoint":"https://example.test","token":"fixture"}"#).unwrap();
         let cfg = load(&[]);
         assert!(cfg.collect_gpus && cfg.collect_sensors);
+        assert!(!cfg.collect_containers && cfg.container_socket.is_none());
         std::fs::write(&path, br#"{"endpoint":"https://example.test","token":"fixture","collect_gpus":false,"collect_sensors":true}"#).unwrap();
         let cfg = load(&[]);
         assert!(!cfg.collect_gpus && cfg.collect_sensors);
         let cfg = load(&["--collect-gpus=true", "--collect-sensors=false"]);
         assert!(cfg.collect_gpus && !cfg.collect_sensors);
         assert!(Config::validate_document(&serde_json::json!({"collect_gpus":"yes"})).is_err());
+        std::fs::write(&path, br#"{"endpoint":"https://example.test","token":"fixture","collect_containers":true,"container_socket":"http://127.0.0.1:2375"}"#).unwrap();
+        let cfg = load(&[]);
+        assert!(cfg.collect_containers);
+        assert_eq!(cfg.container_socket.as_deref(), Some("http://127.0.0.1:2375"));
+        let cfg = load(&["--collect-containers=false", "--container-socket", "/run/podman/podman.sock"]);
+        assert!(!cfg.collect_containers);
+        assert_eq!(cfg.container_socket.as_deref(), Some("/run/podman/podman.sock"));
+        for value in [serde_json::json!({"collect_containers":"true"}),serde_json::json!({"container_socket":5}),serde_json::json!({"container_socket":"ftp://localhost"})] {
+            assert!(Config::validate_document(&value).is_err());
+        }
         std::fs::remove_file(path).unwrap();
     }
 
     #[test]
     fn retired_update_source_is_rejected() {
         assert!(serde_json::from_str::<FileConfig>(r#"{"update_source":"https://example.test"}"#).is_err());
+    }
+
+    #[test]
+    fn container_environment_fixture() {
+        if env::var("POLARIS_CONTAINER_ENV_TEST").is_err() { return; }
+        let args = CliArgs::try_parse_from(["polaris-agent", "run"]).unwrap();
+        assert_eq!(args.collect_containers, Some(true));
+        assert_eq!(args.container_socket.as_deref(), Some("http://127.0.0.1:2375"));
+        let args = CliArgs::try_parse_from(["polaris-agent", "run", "--collect-containers=false", "--container-socket=/var/run/docker.sock"]).unwrap();
+        assert_eq!(args.collect_containers, Some(false));
+        assert_eq!(args.container_socket.as_deref(), Some("/var/run/docker.sock"));
+    }
+
+    #[test]
+    fn container_environment_is_opt_in_and_cli_takes_precedence() {
+        let mut command = std::process::Command::new(env::current_exe().unwrap());
+        command.args(["--exact", "config::tests::container_environment_fixture"])
+            .env("POLARIS_CONTAINER_ENV_TEST", "1")
+            .env("POLARIS_AGENT_COLLECT_CONTAINERS", "true")
+            .env("POLARIS_AGENT_CONTAINER_SOCKET", "http://127.0.0.1:2375");
+        #[cfg(windows)]
+        { use std::os::windows::process::CommandExt; command.creation_flags(0x08000000); }
+        let result = command.output().unwrap();
+        assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stdout));
     }
 
     #[test]

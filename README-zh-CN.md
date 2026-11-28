@@ -129,6 +129,8 @@ polaris-agent command unregister --scope user
 | `auto_update` | 默认关闭；需要具备自动重启能力的托管安装 | `--auto-update=true` / `POLARIS_AGENT_AUTO_UPDATE` |
 | `collect_gpus` | 默认开启，自动检测 NVIDIA GPU | `--collect-gpus=false` / `POLARIS_AGENT_COLLECT_GPUS` |
 | `collect_sensors` | 默认开启，自动检测 Linux 硬件温度 | `--collect-sensors=false` / `POLARIS_AGENT_COLLECT_SENSORS` |
+| `collect_containers` | 默认关闭，显式开启 Docker／Podman 只读遥测 | `--collect-containers=true` / `POLARIS_AGENT_COLLECT_CONTAINERS` |
+| `container_socket` | 可选 Unix Socket 路径或 HTTP(S) 代理 origin；留空自动检测 | `--container-socket` / `POLARIS_AGENT_CONTAINER_SOCKET` |
 | `insecure` | 默认关闭；跳过上报和控制连接的证书校验，不影响独立的探测目标客户端 | `--insecure=true` / `POLARIS_AGENT_INSECURE` |
 | `log_file` | 可选日志文件路径 | `--log-file` |
 
@@ -147,6 +149,25 @@ Linux 从 `/sys/class/hwmon` 读取最多 64 个温度传感器，包括内核�
 硬件在启动时检测，每 10 秒独立采集一次。没有可用来源时，不附加硬件字段，也不显示空卡片。NVIDIA 查询限时 3 秒，失败后等待 60 秒重试，不影响常规上报。已采集的读数在失败或超过 30 秒未更新时清除。新增硬件或安装驱动后，执行 `pa restart` 重新检测。
 
 需要关闭时，在安装使用的 JSON 配置中加入 `"collect_gpus": false` 或 `"collect_sensors": false`，然后重启。这两项只由本地配置控制，远程配置更新会保留原值。服务端需要支持 GPU 与温度遥测；数据只显示在管理员的 Agent 详情中，公开机器接口不返回这些字段。
+
+### Docker 与 Podman 容器
+
+容器采集**默认关闭**。在现有安装配置中增加下面两项，保留原有站点地址和 Token，然后重启：
+
+```json
+{
+  "collect_containers": true,
+  "container_socket": "http://127.0.0.1:2375"
+}
+```
+
+也可设置环境变量 `POLARIS_AGENT_COLLECT_CONTAINERS=true`、`POLARIS_AGENT_CONTAINER_SOCKET`，或使用 `--collect-containers=true --container-socket=http://127.0.0.1:2375`。HTTP 地址应指向受控的只读代理，例如 `docker-socket-proxy`。仅允许容器列表和 stats 的 GET 请求，并限制为 Agent 可访问。采集不会跟随重定向，也不会使用环境 HTTP 代理。
+
+访问完整 Docker Socket 等价于获得很高的主机权限，即使只读挂载也不能限制引擎操作。优先使用受限代理或 rootless Podman，不要向不受控环境暴露完整 Socket。Agent 只发送 GET 请求，不提供容器启动、停止或执行命令的能力。
+
+Unix Socket 使用绝对路径，例如 `/var/run/docker.sock` 或展开后的 `$XDG_RUNTIME_DIR/podman/podman.sock`。留空时，Unix 系统依次尝试 `/var/run/docker.sock`、`$XDG_RUNTIME_DIR/docker.sock`、`$XDG_RUNTIME_DIR/podman/podman.sock`、`/run/podman/podman.sock`。Windows 需显式配置 HTTP(S) 代理 origin。远程配置更新和重装升级会保留这两项本地设置。
+
+每 15 秒采集最多 256 个容器，stats 最多并发 4 个请求，整轮预算为 5 秒。stats 超时或失败时仍保留基础状态，CPU、内存保持未知。列表失败后等待 60 秒重试；读数超过 45 秒未更新时，在下一次常规上报中清除。从未采集成功时不发送容器字段。重启次数和运行时长仅在引擎列表提供对应值时上报，不把容器创建时间当作运行时长。兼容的 Uptime Polaris 服务端仅在管理员详情中展示容器信息。
 
 ### 远程配置与指令
 

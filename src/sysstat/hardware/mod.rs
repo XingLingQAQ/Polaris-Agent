@@ -1,4 +1,6 @@
+pub mod containers;
 mod nvidia;
+pub use containers::ContainerStats;
 #[cfg(any(target_os = "linux", test))]
 mod sensors;
 
@@ -66,8 +68,12 @@ impl<T: Clone> Reading<T> {
     }
 
     fn current(&self) -> Option<Vec<T>> {
+        self.current_with_max_age(MAX_AGE)
+    }
+
+    fn current_with_max_age(&self, max_age: Duration) -> Option<Vec<T>> {
         self.values.as_ref().map(|values| {
-            if self.at.elapsed() > MAX_AGE {
+            if self.at.elapsed() > max_age {
                 Vec::new()
             } else {
                 values.clone()
@@ -80,12 +86,17 @@ impl<T: Clone> Reading<T> {
 pub struct HardwareReader {
     gpus: Option<watch::Receiver<Reading<GpuStats>>>,
     sensors: Option<watch::Receiver<Reading<SensorStats>>>,
+    containers: Option<watch::Receiver<Reading<ContainerStats>>>,
 }
 
 impl HardwareReader {
     pub fn apply(&self, snapshot: &mut super::SysSnapshot) {
         snapshot.gpus = self.gpus.as_ref().and_then(|rx| rx.borrow().current());
         snapshot.sensors = self.sensors.as_ref().and_then(|rx| rx.borrow().current());
+        snapshot.containers = self
+            .containers
+            .as_ref()
+            .and_then(|rx| rx.borrow().current_with_max_age(Duration::from_secs(45)));
     }
 }
 
@@ -121,6 +132,16 @@ impl HardwareTelemetry {
 
     pub fn reader(&self) -> HardwareReader {
         self.reader.clone()
+    }
+
+    pub fn with_containers(mut self, enabled: bool, socket: Option<&str>) -> Self {
+        if enabled {
+            let (tx, rx) = watch::channel(Reading::new());
+            self.reader.containers = Some(rx);
+            self.tasks
+                .push(tokio::spawn(containers::run(socket.map(str::to_owned), tx)));
+        }
+        self
     }
 }
 
@@ -171,7 +192,8 @@ mod tests {
 
     #[test]
     fn disabled_collectors_start_no_tasks_and_emit_no_fields() {
-        let telemetry = HardwareTelemetry::start(false, false);
+        let telemetry = HardwareTelemetry::start(false, false)
+            .with_containers(false, Some("http://127.0.0.1:2375"));
         assert!(telemetry.tasks.is_empty());
         let mut snapshot = super::super::SysSnapshot::default();
         telemetry.reader().apply(&mut snapshot);
@@ -179,6 +201,29 @@ mod tests {
         let json = serde_json::to_value(report).unwrap();
         assert!(json["params"].get("gpus").is_none());
         assert!(json["params"].get("sensors").is_none());
+        assert!(json["params"].get("containers").is_none());
+    }
+
+    #[test]
+    fn container_readings_expire_after_45_seconds_and_explicit_empty_clears() {
+        let mut reading = Reading::<u8>::new();
+        assert_eq!(reading.current_with_max_age(Duration::from_secs(45)), None);
+        reading.update(vec![1]);
+        reading.at = Instant::now() - Duration::from_secs(40);
+        assert_eq!(
+            reading.current_with_max_age(Duration::from_secs(45)),
+            Some(vec![1])
+        );
+        reading.at = Instant::now() - Duration::from_secs(46);
+        assert_eq!(
+            reading.current_with_max_age(Duration::from_secs(45)),
+            Some(vec![])
+        );
+        reading.update(vec![]);
+        assert_eq!(
+            reading.current_with_max_age(Duration::from_secs(45)),
+            Some(vec![])
+        );
     }
 
     #[test]

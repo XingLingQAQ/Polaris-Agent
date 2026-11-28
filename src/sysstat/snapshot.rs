@@ -82,6 +82,8 @@ pub struct SysSnapshot {
     pub gpus: Option<Vec<super::hardware::GpuStats>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sensors: Option<Vec<super::hardware::SensorStats>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub containers: Option<Vec<super::hardware::ContainerStats>>,
 }
 
 /// One network interface's counters at the sample point.
@@ -147,6 +149,7 @@ impl Default for SysSnapshot {
             mounts: Vec::new(),
             gpus: None,
             sensors: None,
+            containers: None,
         }
     }
 }

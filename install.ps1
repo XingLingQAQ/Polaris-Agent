@@ -220,15 +220,17 @@ $savedValues = @{}
 if (Test-Path $cfg) {
   try {
     $saved = Get-Content -Path $cfg -Raw | ConvertFrom-Json
-    $allowed = @('endpoint','token','sample_interval','report_interval','include_nics','exclude_nics','include_mounts','exclude_mounts','insecure','auto_update','collect_gpus','collect_sensors','log_file','runtime_revision','service_tier')
+    $allowed = @('endpoint','token','sample_interval','report_interval','include_nics','exclude_nics','include_mounts','exclude_mounts','insecure','auto_update','collect_gpus','collect_sensors','collect_containers','container_socket','log_file','runtime_revision','service_tier')
     if ($saved -isnot [PSCustomObject]) { throw 'config must be an object' }
     foreach ($property in $saved.PSObject.Properties) {
       if ($allowed -cnotcontains $property.Name) { throw 'configuration contains unsupported fields' }
       $savedValues[$property.Name] = $property.Value
     }
-    foreach ($key in @('collect_gpus','collect_sensors')) {
+    foreach ($key in @('collect_gpus','collect_sensors','collect_containers')) {
       if ($null -ne $savedValues[$key] -and $savedValues[$key] -isnot [bool]) { throw "$key must be a boolean or null" }
     }
+    $socket = $savedValues['container_socket']
+    if ($null -ne $socket -and ($socket -isnot [string] -or [Text.Encoding]::UTF8.GetByteCount($socket) -gt 4096 -or $socket -match '[\x00-\x1f\x7f-\x9f]')) { throw 'container_socket must be a string without control characters' }
   } catch {
     Remove-Item -LiteralPath $stage -Force -ErrorAction SilentlyContinue
     Die 'existing config is invalid; refusing to overwrite it'

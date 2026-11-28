@@ -23,14 +23,17 @@ fn hardware_fields_are_omitted_until_collected_and_empty_arrays_clear_them() {
     let old = value_of(&build_report(&snapshot, 123, &[]));
     assert!(old["params"].get("gpus").is_none());
     assert!(old["params"].get("sensors").is_none());
+    assert!(old["params"].get("containers").is_none());
     let direct = serde_json::to_value(&snapshot).unwrap();
     assert!(direct.get("gpus").is_none());
     assert!(direct.get("sensors").is_none());
     snapshot.gpus = Some(vec![]);
     snapshot.sensors = Some(vec![]);
+    snapshot.containers = Some(vec![]);
     let cleared = value_of(&build_report(&snapshot, 123, &[]));
     assert_eq!(cleared["params"]["gpus"], json!([]));
     assert_eq!(cleared["params"]["sensors"], json!([]));
+    assert_eq!(cleared["params"]["containers"], json!([]));
     assert_eq!(cleared["params"]["cpu"], old["params"]["cpu"]);
 }
 
@@ -124,6 +127,7 @@ fn report_envelope_and_nesting() {
         mounts: vec![],
         gpus: None,
         sensors: None,
+        containers: None,
     };
 
     let summary = FinalizedAggregate {

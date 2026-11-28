@@ -358,7 +358,7 @@ mod tests {
 
             config_path: std::path::PathBuf::from("config.json"),
             runtime_overrides: Default::default(),
-            collect_gpus: false, collect_sensors: false,
+            collect_gpus: false, collect_sensors: false, collect_containers: false, container_socket: None,
         };
         let url = build_url(&cfg).unwrap();
         assert_eq!(url.as_str(), "wss://example.com/api/public/agent/abc123");
@@ -383,7 +383,7 @@ mod tests {
 
             config_path: std::path::PathBuf::from("config.json"),
             runtime_overrides: Default::default(),
-            collect_gpus: false, collect_sensors: false,
+            collect_gpus: false, collect_sensors: false, collect_containers: false, container_socket: None,
         };
         let url = build_url(&cfg).unwrap();
         assert_eq!(url.as_str(), "wss://example.com/api/public/agent/from_url");

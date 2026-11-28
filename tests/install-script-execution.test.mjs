@@ -509,7 +509,7 @@ foreach ($name in @('Invoke-WebRequest', 'Invoke-RestMethod', 'Get-ScheduledTask
 exit $LASTEXITCODE
 `);
 
-  for (const scenario of ['bad-hash', 'success', 'acl-failure', 'invalid-hardware']) {
+  for (const scenario of ['bad-hash', 'success', 'acl-failure', 'invalid-hardware', 'invalid-container-socket', 'invalid-containers']) {
     const validHash = scenario !== 'bad-hash';
     const fixture = join(root, scenario);
     const install = join(fixture, 'install');
@@ -520,7 +520,7 @@ exit $LASTEXITCODE
     const dest = join(install, 'polaris-agent.exe');
     const cfg = join(cfgDir, 'config.json');
     const oldBinary = Buffer.from('previous binary');
-    const oldConfig = JSON.stringify({ endpoint: 'https://old.test', token: 'old-token', sample_interval: 5, report_interval: 60, collect_gpus: scenario === 'invalid-hardware' ? 'false' : false, collect_sensors: true });
+    const oldConfig = JSON.stringify({ endpoint: 'https://old.test', token: 'old-token', sample_interval: 5, report_interval: 60, collect_gpus: scenario === 'invalid-hardware' ? 'false' : false, collect_sensors: true, collect_containers: scenario === 'invalid-containers' ? 'true' : true, container_socket: scenario === 'invalid-container-socket' ? 5 : 'http://127.0.0.1:2375' });
     writeFileSync(dest, oldBinary);
     writeFileSync(cfg, oldConfig);
     writeFileSync(join(cfgDir, '.polaris-agent-managed'), `fixture-agent|${dest}`);
@@ -541,7 +541,7 @@ exit $LASTEXITCODE
       assert.equal(readdirSync(install).filter(name => name.startsWith('.download-')).length, 0);
       continue;
     }
-    if (scenario === 'invalid-hardware') {
+    if (['invalid-hardware', 'invalid-container-socket', 'invalid-containers'].includes(scenario)) {
       assert.notEqual(result.status, 0);
       assert.match(`${result.stdout}\n${result.stderr}`, /existing config is invalid/);
       assert.deepEqual(readFileSync(dest), oldBinary);
@@ -562,6 +562,8 @@ exit $LASTEXITCODE
     assert.equal(JSON.parse(readFileSync(cfg, 'utf8')).service_tier, 'A');
     assert.equal(JSON.parse(readFileSync(cfg, 'utf8')).collect_gpus, false);
     assert.equal(JSON.parse(readFileSync(cfg, 'utf8')).collect_sensors, true);
+    assert.equal(JSON.parse(readFileSync(cfg, 'utf8')).collect_containers, true);
+    assert.equal(JSON.parse(readFileSync(cfg, 'utf8')).container_socket, 'http://127.0.0.1:2375');
     // Read the ACL through .NET: the runner's module path can leave Get-Acl without its module.
     // 通过 .NET 读取 ACL：运行器的模块路径可能让 Get-Acl 找不到所属模块。
     const acl = run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '$acl=(Get-Item -LiteralPath $env:FIXTURE_CFG).GetAccessControl(); if (-not $acl.AreAccessRulesProtected -or @($acl.Access | Where-Object IsInherited).Count -ne 0) { exit 1 }'], { env: { ...process.env, FIXTURE_CFG: cfg } });
