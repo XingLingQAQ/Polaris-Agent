@@ -53,6 +53,29 @@ try {
   writeFileSync(shPath, sh);
   writeFileSync(psPath, ps1);
   run('sh', ['-n', shPath]);
+  const openrcUnit = sh.match(/cat > "\/etc\/init\.d\/\$SERVICE_NAME" <<UNIT\n([^]*?)\nUNIT/)?.[1];
+  assert.ok(openrcUnit);
+  const openrcPath = join(temp, 'openrc-unit.sh');
+  writeFileSync(openrcPath, `set -eu
+SERVICE_MARKER='# fixture service'
+AGENT_NAME=polaris-agent
+DEST=/usr/local/lib/polaris-agent/polaris-agent
+CFG=/etc/polaris-agent/config.json
+eval "$(cat <<UNIT
+${openrcUnit}
+UNIT
+)"
+printf '%s\\0' "$command" "$command_args" "$pidfile" "$retry"
+`);
+  const [command, commandArgs, pidfile, retry] = run('sh', [openrcPath]).stdout.split('\0');
+  assert.equal(command, '/usr/local/lib/polaris-agent/polaris-agent');
+  assert.equal(commandArgs, 'run --config /etc/polaris-agent/config.json');
+  assert.equal(pidfile, '/run/polaris-agent.pid');
+  const [stopSignal, graceSeconds, finalSignal, finalSeconds] = retry.split('/');
+  assert.equal(stopSignal, 'TERM');
+  assert.ok(Number(graceSeconds) > 20 + 5, 'allow an in-flight HTTP request and final report to finish');
+  assert.equal(finalSignal, 'KILL');
+  assert.ok(Number(finalSeconds) > 0, 'wait for forced termination before starting a replacement');
   const registration = sh.slice(sh.indexOf('scope="user"'), sh.indexOf('if [ "$REGISTER_COMMAND" = 1 ]; then'));
   assert.ok(registration.includes('record-installation'));
   const registrationPath = join(temp, 'registration.sh');

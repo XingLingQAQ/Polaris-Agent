@@ -858,6 +858,7 @@ command="$DEST"
 command_args="run --config "$CFG""
 command_background=true
 pidfile="/run/$AGENT_NAME.pid"
+retry="TERM/30/KILL/5"
 respawn_delay=5
 output_log="/var/log/$AGENT_NAME.log"
 error_log="/var/log/$AGENT_NAME.log"
