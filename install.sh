@@ -971,7 +971,9 @@ scope="user"
 [ "$MODE" != user ] || scope="user"
 SERVICE_EXTRA_PATH="$DOCKER_DIR/compose.yaml"
 if [ "$SERVICE_MANAGER" = launchd ]; then SERVICE_EXTRA_PATH="$PLIST"; fi
-"$DEST" record-installation --config "$CFG" --manager "$SERVICE_MANAGER" --service-name "$SERVICE_NAME" --scope "$scope" --mode "$MODE" --install-dir "$INSTALL_DIR" --log-path "$LOG_PATH" --extra-path "$SERVICE_EXTRA_PATH" --user-id "$(id -u)" || die "cannot save installation information"
+set -- record-installation --config "$CFG" --manager "$SERVICE_MANAGER" --service-name "$SERVICE_NAME" --scope "$scope" --mode "$MODE" --log-path "$LOG_PATH" --extra-path "$SERVICE_EXTRA_PATH" --user-id "$(id -u)"
+if [ -n "$INSTALL_DIR" ]; then set -- "$@" --install-dir "$INSTALL_DIR"; fi
+"$DEST" "$@" || die "cannot save installation information"
 if [ "$REGISTER_COMMAND" = 1 ]; then
   "$DEST" command register --config "$CFG" --scope "$scope" || die "cannot register the terminal command; use --no-register-command to skip registration"
 fi

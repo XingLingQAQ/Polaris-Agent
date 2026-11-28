@@ -53,6 +53,33 @@ try {
   writeFileSync(shPath, sh);
   writeFileSync(psPath, ps1);
   run('sh', ['-n', shPath]);
+  const registration = sh.slice(sh.indexOf('scope="user"'), sh.indexOf('if [ "$REGISTER_COMMAND" = 1 ]; then'));
+  assert.ok(registration.includes('record-installation'));
+  const registrationPath = join(temp, 'registration.sh');
+  writeFileSync(registrationPath, `set -eu
+record_arguments() { printf '%s\\0' "$@"; }
+die() { printf '%s\\n' "$*" >&2; exit 1; }
+DEST=record_arguments
+CFG='/etc/polaris-agent/config.json'
+SERVICE_MANAGER=openrc
+SERVICE_NAME=polaris-agent
+MODE=system
+IS_ROOT=1
+INSTALL_DIR="$1"
+LOG_PATH='/var/log/polaris-agent.log'
+DOCKER_DIR='/tmp/polaris-agent-docker'
+${registration}
+`);
+  for (const installDir of ['', '/opt/polaris custom']) {
+    const argv = run('sh', [registrationPath, installDir]).stdout.split('\0').slice(0, -1);
+    assert.equal(argv[0], 'record-installation');
+    assert.ok(argv.every(value => value.length > 0), 'optional paths must not emit empty arguments');
+    assert.equal(argv[argv.indexOf('--manager') + 1], 'openrc');
+    assert.equal(argv[argv.indexOf('--config') + 1], '/etc/polaris-agent/config.json');
+    assert.equal(argv[argv.indexOf('--scope') + 1], 'system');
+    assert.equal(argv.includes('--install-dir'), Boolean(installDir));
+    if (installDir) assert.equal(argv[argv.indexOf('--install-dir') + 1], installDir);
+  }
   const parser = join(temp, 'parse.ps1');
   writeFileSync(parser, '$t=$null; $e=$null; [System.Management.Automation.Language.Parser]::ParseFile($args[0],[ref]$t,[ref]$e) > $null; if ($e.Count) { $e | Out-String | Write-Error; exit 1 }');
   run(process.platform === 'win32' ? 'powershell.exe' : 'pwsh', ['-NoProfile', '-NonInteractive', '-File', parser, psPath]);
