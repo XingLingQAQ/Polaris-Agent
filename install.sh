@@ -855,7 +855,7 @@ elif [ "$HAVE_OPENRC" = 1 ] && [ "$IS_ROOT" = 1 ]; then
 #!/sbin/openrc-run
 $SERVICE_MARKER
 name="$AGENT_NAME"
-command="$DEST"
+command="\\"$DEST\\""
 command_args="run --config \\"$CFG\\""
 supervisor="supervise-daemon"
 pidfile="/run/$SERVICE_NAME.pid"

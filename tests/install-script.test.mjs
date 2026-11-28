@@ -70,7 +70,7 @@ UNIT
 printf '%s\\0' "$command" "$command_args" "$pidfile" "$retry" "$supervisor" "$respawn_max" "$respawn_delay" "\${command_background:-false}"
 `);
   const [command, commandArgs, pidfile, retry, supervisor, respawnMax, respawnDelay, background] = run('sh', [openrcPath]).stdout.split('\0');
-  assert.equal(command, '/usr/local/lib/polaris-agent/polaris-agent');
+  assert.equal(command, '"/usr/local/lib/polaris-agent/polaris-agent"');
   assert.equal(commandArgs, 'run --config "/etc/polaris-agent/config.json"');
   assert.equal(pidfile, '/run/polaris-agent.pid');
   assert.equal(supervisor, 'supervise-daemon');

@@ -7,7 +7,7 @@ SERVICE_NAME="polaris-supervision-test-$$"
 AGENT_NAME=polaris-agent
 SERVICE_MARKER="# polaris-agent-managed:$SERVICE_NAME:"
 fixture=$(mktemp -d)
-DEST="$fixture/agent binary"
+DEST="$fixture/agent"
 CFG="$fixture/config file.json"
 LOG_PATH="$fixture/output.log"
 unit="/etc/init.d/$SERVICE_NAME"
@@ -44,11 +44,14 @@ child_pid() { tail -n 1 "$fixture/runs" | cut -d ' ' -f 1; }
 write_agent first
 template=$(awk '/^  cat > "\/etc\/init.d\/\$SERVICE_NAME" <<UNIT$/ { found=1; next } found && /^UNIT$/ { exit } found { print }' install.sh)
 [ -n "$template" ]
-eval "cat > \"\$fixture/new-unit\" <<UNIT
+render_unit() {
+  eval "cat > \"\$fixture/new-unit\" <<UNIT
 $template
 UNIT"
-printf '\ndepend() { :; }\n' >> "$fixture/new-unit"
-sed 's/supervisor="supervise-daemon"/command_background=true/; /^respawn_max=/d' "$fixture/new-unit" > "$unit"
+  printf '\ndepend() { :; }\n' >> "$fixture/new-unit"
+}
+render_unit
+sed 's/supervisor="supervise-daemon"/command_background=true/; /^respawn_max=/d; /^command=/s/\\"//g' "$fixture/new-unit" > "$unit"
 chmod 755 "$unit"
 rc-service "$SERVICE_NAME" start
 wait_runs 1
@@ -56,6 +59,9 @@ kill -TERM "$(child_pid)"
 sleep 2
 rc-service "$SERVICE_NAME" stop
 
+DEST="$fixture/agent binary"
+write_agent replacement
+render_unit
 cp "$fixture/new-unit" "$unit"
 chmod 755 "$unit"
 rc-service "$SERVICE_NAME" start

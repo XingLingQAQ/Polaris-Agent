@@ -52,6 +52,8 @@ case "$2" in
     [ "$supervisor" = supervise-daemon ] && [ "$respawn_max" = 0 ] && [ "$respawn_delay" = 5 ] || exit 91
     [ "\${command_background:-false}" = false ] || exit 92
     [ "$pidfile" = /run/fixture-custom.pid ] && [ "$output_log" = /var/log/fixture-custom.log ] && [ "$error_log" = "$output_log" ] || exit 93
+    eval "set -- $command"
+    [ "$#" = 1 ] && [ "$1" = '/opt/polaris agent/polaris-agent' ] || exit 96
     eval "set -- $command_args"
     [ "$#" = 3 ] && [ "$1" = run ] && [ "$2" = --config ] && [ "$3" = '/opt/polaris agent/config.json' ] || exit 95
     [ "$FIXTURE_SCENARIO" != start-failed ] || exit 1 ;;
